@@ -1,0 +1,17 @@
+# docker compose up -d
+# 默认 PPT 保存在命名卷 pptist-data 中，容器重建后不丢失
+services:
+  pptist:
+    build: .
+    ports:
+      - "8686:8686"
+    environment:
+      # 局域网其他电脑访问时展示的上传地址（改为服务器实际 IP）
+      PPTIST_PUBLIC_URL: http://192.168.1.10:8686
+      PPTIST_MAX_UPLOAD_MB: "100"
+    volumes:
+      - pptist-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  pptist-data:
