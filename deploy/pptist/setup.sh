@@ -35,10 +35,10 @@ else
   fi
 fi
 
-# ---- 3. 生成/升级配置文件（已有则不覆盖其他项；上传上限自动升级到包推荐值） ----
+# ---- 3. 生成/升级配置文件 ----
+# 上传大小上限默认即为 1GB（程序内置）；如需自定义，取消注释并修改数值后重启服务
 LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' | tr -d '[:space:]')"
 PORT_DEFAULT=8686
-RECOMMENDED_UPLOAD_MB=1024
 if [ ! -f config.env ]; then
   cat > config.env <<EOF
 # PPTist 服务配置（修改后重新运行 start-pptist.sh 生效）
@@ -46,17 +46,16 @@ PPTIST_PORT=${PORT_DEFAULT}
 # 对外访问地址：其他电脑通过该地址访问上传页（已自动填入本机局域网 IP）
 PPTIST_PUBLIC_URL=http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}
 PPTIST_DATA_DIR=${DIR}/data
-PPTIST_MAX_UPLOAD_MB=${RECOMMENDED_UPLOAD_MB}
+# 上传大小上限（MB），默认 1024（1GB）；需要调整时取消注释并修改
+# PPTIST_MAX_UPLOAD_MB=1024
 EOF
   echo "[setup] 已生成 config.env（局域网 IP：${LAN_IP:-未探测到}）"
 else
-  # 旧版本部署包生成的 config.env 上限较小（如 100/300）：升级为包推荐值；
-  # 取两者较大值，不影响手动调大的配置
-  CURRENT_MB="$(grep '^PPTIST_MAX_UPLOAD_MB=' config.env | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
-  case "$CURRENT_MB" in ''|*[!0-9]*) CURRENT_MB=0 ;; esac
-  if [ "$CURRENT_MB" -lt "$RECOMMENDED_UPLOAD_MB" ]; then
-    sed -i "s/^PPTIST_MAX_UPLOAD_MB=.*/PPTIST_MAX_UPLOAD_MB=${RECOMMENDED_UPLOAD_MB}/" config.env
-    echo "[setup] 已将 config.env 的上传上限从 ${CURRENT_MB:-0}MB 升级为 ${RECOMMENDED_UPLOAD_MB}MB（重启服务后生效）"
+  # 旧版本部署包生成的 config.env 固定了较小上限（如 100/300），会屏蔽程序默认值：
+  # 将其注释停用，改用程序默认值 1024MB；需要自定义时取消注释并修改数值
+  if grep -q '^PPTIST_MAX_UPLOAD_MB=' config.env; then
+    sed -i 's/^PPTIST_MAX_UPLOAD_MB=/# PPTIST_MAX_UPLOAD_MB=/' config.env
+    echo '[setup] 已停用 config.env 中旧的上传上限设置，将使用程序默认值 1024MB（重启服务后生效）'
   fi
 fi
 
