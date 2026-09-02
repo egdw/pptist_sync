@@ -70,23 +70,29 @@ export async function fetchDefaultPptSlides(): Promise<{ bundle: DefaultPptBundl
 }
 
 /**
- * 上传并设为默认：原始文件（base64）与解析数据打包为一个请求，
- * 服务端校验通过后原子切换版本，保证「原文件、解析数据同一版本」。
- * onProgress 回调上报上传进度（0-100）。
+ * 上传并设为默认：二进制信封 v2 请求体
+ *   [4 字节头长度][4 字节 bundle 长度][头部 JSON{filename,pageCount}][bundle 字节][原始文件字节]
+ * - 文件不做 base64 膨胀；bundle（解析后的文稿 JSON）按页分片序列化后组装为 Blob，
+ *   全程不产生超大字符串，支持大文件（上限内）上传。
+ * - 服务端按字节范围原样保存 bundle，保证「原文件、解析数据同一版本」。
+ * - onProgress 回调上报上传进度（0-100）。
  */
 export function uploadDefaultPpt(
-  payload: { filename: string; file: File; bundle: DefaultPptBundle },
+  payload: { filename: string; file: File; pageCount: number; bundleParts: BlobPart[] },
   onProgress?: (percent: number) => void,
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
-    // 二进制信封：[4 字节头长度][头部 JSON{filename,bundle}][原始文件字节]，文件不做 base64 膨胀
+    const bundleBlob = new Blob(payload.bundleParts)
     const headerBytes = new TextEncoder().encode(JSON.stringify({
       filename: payload.filename,
-      bundle: payload.bundle,
+      pageCount: payload.pageCount,
     }))
-    const lengthBytes = new ArrayBuffer(4)
-    new DataView(lengthBytes).setUint32(0, headerBytes.length, false)
-    const body = new Blob([lengthBytes, headerBytes, payload.file])
+    const envelopeParts: BlobPart[] = []
+    const headerLen = new ArrayBuffer(4)
+    new DataView(headerLen).setUint32(0, headerBytes.length, false)
+    const bundleLen = new ArrayBuffer(4)
+    new DataView(bundleLen).setUint32(0, bundleBlob.size, false)
+    envelopeParts.push(headerLen, bundleLen, headerBytes, bundleBlob, payload.file)
 
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${API_BASE}/upload`)
@@ -108,7 +114,7 @@ export function uploadDefaultPpt(
       else reject(new Error(data?.error || `上传失败（${xhr.status}）`))
     }
     xhr.onerror = () => reject(new Error('网络错误，上传失败'))
-    xhr.send(body)
+    xhr.send(new Blob(envelopeParts))
   })
 }
 

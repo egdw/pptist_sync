@@ -191,6 +191,8 @@ try {
 
   // 原生全屏时右上角入口整排隐藏；未全屏时显示（全屏 / 放映联动 / 上传）
   if (fullscreenAfterReload) {
+    // 浏览器恢复全屏是异步的，等待入口随全屏状态隐藏（最多 5 秒）
+    await pageA.waitForFunction(() => !document.querySelector('.upload-entry'), { timeout: 5000 }).catch(() => {})
     const entryHidden = await pageA.evaluate(() => !document.querySelector('.upload-entry'))
     assert.equal(entryHidden, true)
     ok('原生全屏时右上角「放映联动 / 上传 / 全屏」入口整排隐藏，画面无遮挡')

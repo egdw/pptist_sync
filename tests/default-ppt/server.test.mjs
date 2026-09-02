@@ -75,14 +75,18 @@ function stopServer() {
 }
 
 async function upload(filename, rawBuffer, bundle) {
-  // 与前端一致的二进制信封：[4 字节头长度][头部 JSON{filename,bundle}][原始文件字节]
-  const header = Buffer.from(JSON.stringify({ filename, bundle }))
-  const lengthPrefix = Buffer.alloc(4)
-  lengthPrefix.writeUInt32BE(header.length)
+  // 与前端一致的二进制信封 v2：[4 字节头长度][4 字节 bundle 长度][头部 JSON{filename,pageCount}][bundle 字节][原始文件字节]
+  const header = Buffer.from(JSON.stringify({ filename, pageCount: bundle.slides.length }))
+  const bundleBuf = Buffer.from(JSON.stringify(bundle))
+  const lenBuf = n => {
+    const b = Buffer.alloc(4)
+    b.writeUInt32BE(n)
+    return b
+  }
   const res = await fetch(`${BASE}/default-ppt-api/upload`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/octet-stream' },
-    body: Buffer.concat([lengthPrefix, header, rawBuffer]),
+    body: Buffer.concat([lenBuf(header.length), lenBuf(bundleBuf.length), header, bundleBuf, rawBuffer]),
   })
   return { status: res.status, data: await res.json() }
 }
@@ -264,12 +268,14 @@ try {
     ok('连续上传：按提交顺序串行处理，最终为最新提交的版本（v6）')
   }
 
-  // 7. 历史版本保留数
+  // 7. 历史版本不保留：仅存在当前默认版本目录
   {
     const versionsDir = path.join(dataDir, 'versions')
     const names = await fsp.readdir(versionsDir)
-    assert.ok(names.length <= 3, `版本目录数 ${names.length} 应 <= 保留上限 3`)
-    ok(`历史版本清理：保留最近 ${3} 个版本（当前 ${names.length} 个）`)
+    const current = await (await fetch(`${BASE}/default-ppt-api/current`)).json()
+    assert.equal(names.length, 1, `应仅保留当前版本目录，实际 ${names.length} 个`)
+    assert.equal(names[0], current.version)
+    ok('历史版本清理：仅保留当前默认版本，其余已删除')
   }
 
   // 8. SPA 路由回退

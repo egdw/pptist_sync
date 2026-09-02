@@ -33,8 +33,7 @@ npm run server     # 启动服务端（默认 http://0.0.0.0:8686），同时提
   | `PPTIST_PORT` | `8686` | 服务端口（绑定 0.0.0.0） |
   | `PPTIST_DATA_DIR` | `<项目>/data/default-ppt` | 默认 PPT 持久化目录 |
   | `PPTIST_PUBLIC_URL` | 空（用请求 origin） | 对外访问基地址，播放页/上传页展示上传地址用；建议设为 `http://<局域网IP>:8686` |
-  | `PPTIST_MAX_UPLOAD_MB` | `300` | .pptx / .pdf 大小上限 |
-  | `PPTIST_KEEP_VERSIONS` | `5` | 保留的历史版本数 |
+  | `PPTIST_MAX_UPLOAD_MB` | `1024` | .pptx / .pdf 大小上限 |
   | `PPTIST_DIST_DIR` | `<项目>/dist` | 前端产物目录 |
   | `PPTIST_REMOTE_API` | `https://server.pptist.cn` | /api 代理目标（AIPPT 等），置空禁用 |
 
@@ -62,7 +61,7 @@ data/default-ppt/
   版本号 `seq` 单调递增；同名文件重复上传也会生成新版本。
 - **版本对应**：原始文件与解析数据同目录、同版本保存；播放端加载时以响应头
   `X-PPTist-Version` 为准，请求期间发生更新也不会错配。
-- **历史清理**：仅保留最近 `PPTIST_KEEP_VERSIONS` 个版本；播放端加载后数据已在内存，
+- **历史清理**：仅保留当前默认版本，历史版本在上传成功后立即删除；播放端加载后数据已在内存，
   清理不影响播放。
 - **不上传者浏览器存储**：所有数据在服务端磁盘，任何电脑打开播放页都能获取。
 

@@ -110,7 +110,7 @@ const slidesStore = useSlidesStore()
 const { slides } = storeToRefs(slidesStore)
 const { importPPTXFile, exporting } = useImport()
 
-const config = ref<DefaultPptConfig>({ publicBaseUrl: null, maxUploadMB: 300, acceptTypes: ['.pptx', '.pdf'] })
+const config = ref<DefaultPptConfig>({ publicBaseUrl: null, maxUploadMB: 1024, acceptTypes: ['.pptx', '.pdf'] })
 const currentMeta = ref<DefaultPptMeta>({ exists: false })
 const selectedFile = ref<File | null>(null)
 const parsed = ref(false)
@@ -121,8 +121,9 @@ const errorText = ref('')
 const successText = ref('')
 const progressPercent = ref(0)
 const dragging = ref(false)
-// 解析产物：PPTX 经导入管线写入 store 后读取；PDF 由 pdf.js 逐页渲染生成
-const parsedBundle = ref<DefaultPptBundle | null>(null)
+// 解析产物：按页分片的 bundle BlobPart（避免超大 JSON 字符串）与页数
+const parsedBundleParts = ref<BlobPart[] | null>(null)
+const parsedPageCount = ref(0)
 // 解析前播种的空页 id：导入完成后 store 中仍只有该页，说明解析失败
 let seedSlideId = ''
 
@@ -162,10 +163,23 @@ const validateFile = (file: File): string | null => {
 
 const resetParseState = () => {
   parsed.value = false
-  parsedBundle.value = null
+  parsedBundleParts.value = null
+  parsedPageCount.value = 0
   errorText.value = ''
   successText.value = ''
   progressPercent.value = 0
+}
+
+/** 按页分片序列化 bundle：避免为整个文稿生成超大 JSON 字符串（支持大文件上传） */
+const buildBundleParts = (bundle: DefaultPptBundle): BlobPart[] => {
+  const parts: BlobPart[] = [
+    `{"title":${JSON.stringify(bundle.title || '')},"theme":${JSON.stringify(bundle.theme || {})},"viewportSize":${bundle.viewportSize || 1000},"viewportRatio":${bundle.viewportRatio || 0.5625},"slides":[`,
+  ]
+  bundle.slides.forEach((slide, index) => {
+    parts.push((index > 0 ? ',' : '') + JSON.stringify(slide))
+  })
+  parts.push(']}')
+  return parts
 }
 
 /** PDF：pdf.js 逐页渲染为图片页（每页背景图铺满），页面文字提取到演讲者备注 */
@@ -239,9 +253,11 @@ const handleFile = async (file: File) => {
   if (isPdf(file)) {
     statusText.value = '解析中 ...'
     try {
-      parsedBundle.value = await parsePdf(file)
+      const bundle = await parsePdf(file)
+      parsedBundleParts.value = buildBundleParts(bundle)
+      parsedPageCount.value = bundle.slides.length
       parsed.value = true
-      statusText.value = `解析成功：共 ${parsedBundle.value.slides.length} 页，可以上传`
+      statusText.value = `解析成功：共 ${bundle.slides.length} 页，可以上传`
     }
     catch (error) {
       errorText.value = `PDF 解析失败：${(error as Error)?.message || '未知错误'}（加密 PDF 不支持，请先解除密码）`
@@ -287,19 +303,20 @@ watch(exporting, value => {
     parsed.value = false
     return
   }
-  parsedBundle.value = {
+  parsedBundleParts.value = buildBundleParts({
     title: slidesStore.title,
-    slides: JSON.parse(JSON.stringify(resultSlides)),
-    theme: JSON.parse(JSON.stringify(slidesStore.theme)),
+    slides: resultSlides,
+    theme: slidesStore.theme,
     viewportSize: slidesStore.viewportSize,
     viewportRatio: slidesStore.viewportRatio,
-  }
+  })
+  parsedPageCount.value = resultSlides.length
   parsed.value = true
   statusText.value = `解析成功：共 ${resultSlides.length} 页，可以上传`
 })
 
 const upload = async () => {
-  if (!selectedFile.value || !parsed.value || !parsedBundle.value || uploading.value) return
+  if (!selectedFile.value || !parsed.value || !parsedBundleParts.value || uploading.value) return
   uploading.value = true
   errorText.value = ''
   successText.value = ''
@@ -312,7 +329,8 @@ const upload = async () => {
     const result = await uploadDefaultPpt({
       filename: selectedFile.value.name,
       file: selectedFile.value,
-      bundle: parsedBundle.value,
+      pageCount: parsedPageCount.value,
+      bundleParts: parsedBundleParts.value,
     }, percent => (progressPercent.value = percent))
     successText.value = '已设为默认 PPT，更新通知已发送。播放页面加载完成后将自动切换。'
     statusText.value = ''

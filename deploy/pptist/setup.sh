@@ -45,7 +45,7 @@ PPTIST_PORT=${PORT_DEFAULT}
 # 对外访问地址：其他电脑通过该地址访问上传页（已自动填入本机局域网 IP）
 PPTIST_PUBLIC_URL=http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}
 PPTIST_DATA_DIR=${DIR}/data
-PPTIST_MAX_UPLOAD_MB=300
+PPTIST_MAX_UPLOAD_MB=1024
 EOF
   echo "[setup] 已生成 config.env（局域网 IP：${LAN_IP:-未探测到}）"
 fi
