@@ -28,13 +28,24 @@ else
 fi
 export PPTIST_PORT PPTIST_PUBLIC_URL PPTIST_DATA_DIR PPTIST_MAX_UPLOAD_MB
 
-# ---- 启动服务（已在运行则跳过） ----
+# ---- 启动服务（已在运行则跳过；清理端口占用，避免旧进程残留导致新服务启动失败） ----
 if [ -f server.pid ] && kill -0 "$(cat server.pid)" 2>/dev/null; then
   echo "[pptist] 服务已在运行（PID $(cat server.pid)）"
 else
+  rm -f server.pid
+  # 清理占用端口的其他进程（上次的孤儿进程等）
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k "${PORT}/tcp" 2>/dev/null && sleep 1
+  fi
   echo "[pptist] 启动服务（端口 ${PORT}）..."
   nohup "$NODE_CMD" server/pptist-server.mjs >> server.log 2>&1 &
   echo $! > server.pid
+  sleep 1
+  if ! kill -0 "$(cat server.pid)" 2>/dev/null; then
+    echo "[pptist] 服务启动失败，最近日志："
+    tail -5 server.log
+    exit 1
+  fi
 fi
 
 # ---- 等待服务就绪（最多 15 秒，用 node 自身探测，无需 curl） ----
@@ -45,7 +56,11 @@ const start = Date.now()
   while (Date.now() - start < 15000) {
     try {
       const r = await fetch(`http://127.0.0.1:${port}/default-ppt-api/config`)
-      if (r.ok) { console.log('[pptist] 服务就绪'); process.exit(0) }
+      if (r.ok) {
+        const c = await r.json()
+        console.log(`[pptist] 服务就绪（上传上限 ${c.maxUploadMB}MB）`)
+        process.exit(0)
+      }
     } catch {}
     await new Promise(r => setTimeout(r, 300))
   }
