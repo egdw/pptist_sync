@@ -41,7 +41,10 @@
           <div class="progress" v-if="progressVisible">
             <div class="progress-inner" :style="{ width: progressPercent + '%' }"></div>
           </div>
-          <div class="error-text" v-if="errorText">{{ errorText }}</div>
+          <div class="error-text" v-if="serverOutdated">
+            检测到服务端版本较旧（与页面协议不一致），上传会失败。请用最新部署包中的 server/pptist-server.mjs 覆盖板子上的同名文件，然后执行 ./stop-pptist.sh && ./start-pptist.sh 重启服务。
+          </div>
+          <div class="error-text" v-else-if="errorText">{{ errorText }}</div>
 
           <button class="primary-btn" :disabled="!canUpload" @click="upload()">
             <i-icon-park-outline:upload class="btn-icon" /> {{ uploading ? '上传中 ...' : '上传并设为默认' }}
@@ -142,7 +145,11 @@ const playUrl = computed(() => {
 })
 
 const progressVisible = computed(() => uploading.value || parsing.value)
-const canUpload = computed(() => !!selectedFile.value && parsed.value && !uploading.value)
+// 页面（二进制信封 v2）与服务端版本不一致时（旧版服务端无 uploadEnvelope 字段），
+// 上传必然失败且报错难以理解，直接阻断并明确提示
+const configFetched = ref(false)
+const serverOutdated = computed(() => configFetched.value && config.value.uploadEnvelope !== 2)
+const canUpload = computed(() => !!selectedFile.value && parsed.value && !uploading.value && !serverOutdated.value)
 
 const formatTime = (time?: string) => {
   if (!time) return '—'
@@ -361,6 +368,7 @@ onMounted(async () => {
   slidesStore.setSlides([{ id: nanoid(10), elements: [] }])
   try {
     config.value = await fetchDefaultPptConfig()
+    configFetched.value = true
   }
   catch {
     /* 服务端不可达时仍可查看界面，上传时会提示具体错误 */

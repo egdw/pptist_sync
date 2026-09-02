@@ -22,6 +22,8 @@ export interface DefaultPptConfig {
   publicBaseUrl: string | null
   maxUploadMB: number
   acceptTypes: string[]
+  /** 服务端支持的上传信封协议版本；旧版服务端不返回该字段 */
+  uploadEnvelope?: number
 }
 
 export interface DefaultPptBundle {

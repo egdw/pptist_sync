@@ -356,7 +356,9 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, {
           publicBaseUrl: PUBLIC_URL || null,
           maxUploadMB: MAX_UPLOAD_MB,
-          acceptTypes: ['.pptx'],
+          acceptTypes: ['.pptx', '.pdf'],
+          // 上传信封协议版本：前端据此检测与服务端版本是否一致（旧版服务端无此字段）
+          uploadEnvelope: 2,
         })
         return
       }
