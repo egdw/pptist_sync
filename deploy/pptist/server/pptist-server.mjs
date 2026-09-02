@@ -15,15 +15,15 @@
  *   PPTIST_DATA_DIR      默认 PPT 持久化目录（默认 <项目根>/data/default-ppt）
  *   PPTIST_DIST_DIR      前端构建产物目录（默认 <项目根>/dist）
  *   PPTIST_PUBLIC_URL    对外访问基地址（如 http://192.168.1.10:8686），用于播放页展示上传地址；缺省用请求的 origin
- *   PPTIST_MAX_UPLOAD_MB 允许的 .pptx 大小上限（默认 100）
- *   PPTIST_KEEP_VERSIONS 保留的历史版本数（默认 5，含当前版本）
+ *   PPTIST_MAX_UPLOAD_MB 允许的 .pptx / .pdf 大小上限（默认 1024，即 1GB；解析在浏览器端完成，超大文件需要上传端有足够内存）
  *   PPTIST_REMOTE_API    /api/* 代理目标（默认 https://server.pptist.cn，置空禁用）
  *
  * 数据目录结构：
  *   <DATA_DIR>/current.json                     当前默认版本元数据（临时文件+rename 原子写入）
- *   <DATA_DIR>/versions/v<seq>/raw.pptx         原始 .pptx
+ *   <DATA_DIR>/versions/v<seq>/raw.file         原始文件（.pptx / .pdf）
  *   <DATA_DIR>/versions/v<seq>/slides.json      解析后的文稿数据（图片为 base64 data URL，含 GIF）
  *   <DATA_DIR>/versions/v<seq>/meta.json        该版本元数据
+ *   仅保留当前默认版本：新版本上传成功后，其余版本目录立即清理。
  */
 import http from 'node:http'
 import https from 'node:https'
@@ -40,8 +40,7 @@ const PORT = Number(process.env.PPTIST_PORT || 8686)
 const DATA_DIR = path.resolve(process.env.PPTIST_DATA_DIR || path.join(ROOT, 'data/default-ppt'))
 const DIST_DIR = path.resolve(process.env.PPTIST_DIST_DIR || path.join(ROOT, 'dist'))
 const PUBLIC_URL = (process.env.PPTIST_PUBLIC_URL || '').replace(/\/+$/, '')
-const MAX_UPLOAD_MB = Math.max(1, Number(process.env.PPTIST_MAX_UPLOAD_MB || 100))
-const KEEP_VERSIONS = Math.max(1, Number(process.env.PPTIST_KEEP_VERSIONS || 5))
+const MAX_UPLOAD_MB = Math.max(1, Number(process.env.PPTIST_MAX_UPLOAD_MB || 1024))
 const REMOTE_API = process.env.PPTIST_REMOTE_API !== undefined ? process.env.PPTIST_REMOTE_API : 'https://server.pptist.cn'
 
 const VERSIONS_DIR = path.join(DATA_DIR, 'versions')
@@ -96,7 +95,7 @@ async function loadCurrent() {
     if (meta && meta.version && meta.seq > 0) {
       // 校验版本目录完整性，损坏则视为无默认文稿
       await fsp.access(path.join(VERSIONS_DIR, meta.version, 'slides.json'))
-      await fsp.access(path.join(VERSIONS_DIR, meta.version, 'raw.pptx'))
+      await fsp.access(path.join(VERSIONS_DIR, meta.version, 'raw.file'))
       current = meta
     }
   }
@@ -118,24 +117,13 @@ function publicMeta() {
   return { exists: true, seq, version, filename, pageCount, updatedAt }
 }
 
-async function pruneOldVersions() {
+/** 仅保留当前默认版本：其余版本目录全部清理（播放端已将文稿载入内存，删除不影响播放） */
+async function cleanupVersions() {
   try {
     const names = await fsp.readdir(VERSIONS_DIR)
-    const entries = []
     for (const name of names) {
       if (name === current?.version) continue
-      try {
-        const meta = JSON.parse(await fsp.readFile(path.join(VERSIONS_DIR, name, 'meta.json'), 'utf8'))
-        entries.push({ name, seq: meta.seq || 0 })
-      }
-      catch {
-        entries.push({ name, seq: 0 })
-      }
-    }
-    entries.sort((a, b) => a.seq - b.seq)
-    const removable = entries.slice(0, Math.max(0, entries.length - (KEEP_VERSIONS - 1)))
-    for (const item of removable) {
-      await fsp.rm(path.join(VERSIONS_DIR, item.name), { recursive: true, force: true }).catch(() => {})
+      await fsp.rm(path.join(VERSIONS_DIR, name), { recursive: true, force: true }).catch(() => {})
     }
   }
   catch (error) {
@@ -156,34 +144,34 @@ function broadcastVersion(meta) {
   log(`已广播新版本 v${meta.seq}（${meta.filename}，${meta.pageCount} 页）给 ${sseClients.size} 个播放端`)
 }
 
-/** 校验上传内容；失败抛出带中文原因的 Error */
-function validateUpload(body) {
-  const filename = String(body.filename || '')
-  if (!/\.pptx$/i.test(filename)) throw new Error('仅支持 .pptx 文件')
-  const fileBase64 = String(body.fileBase64 || '')
-  if (!fileBase64) throw new Error('缺少文件内容')
-  const raw = Buffer.from(fileBase64, 'base64')
-  if (raw.length === 0) throw new Error('文件内容为空')
-  if (raw.length > MAX_UPLOAD_MB * 1024 * 1024) {
+/**
+ * 校验上传内容（二进制信封 v2：[4 字节头长度][4 字节 bundle 长度][头部 JSON{filename,pageCount}][bundle 字节][原始文件字节]）。
+ * bundle（解析后的文稿 JSON）不再整体 JSON.parse——按字节范围原样落盘，
+ * 服务端只做轻量结构检查，内存占用与校验开销不随文稿大小膨胀。
+ */
+function validateUpload({ filename, file, bundleBuf, pageCount }) {
+  filename = String(filename || '')
+  if (!/\.(pptx|pdf)$/i.test(filename)) throw new Error('仅支持 .pptx / .pdf 文件')
+  if (!Buffer.isBuffer(file) || file.length === 0) throw new Error('缺少文件内容')
+  if (file.length > MAX_UPLOAD_MB * 1024 * 1024) {
     throw new Error(`文件超过大小上限（${MAX_UPLOAD_MB}MB）`)
   }
-  if (raw.length < 4 || raw.subarray(0, 4).toString('latin1') !== 'PK\x03\x04') {
-    throw new Error('文件不是有效的 PPTX（ZIP）格式，可能已损坏')
+  const magic4 = file.subarray(0, 4).toString('latin1')
+  if (/\.pptx$/i.test(filename)) {
+    if (magic4 !== 'PK\x03\x04') throw new Error('文件不是有效的 PPTX（ZIP）格式，可能已损坏')
   }
-  const bundle = body.bundle
-  if (!bundle || !Array.isArray(bundle.slides) || bundle.slides.length === 0) {
-    throw new Error('解析结果为空，无法设为默认 PPT')
+  else if (!file.subarray(0, 5).toString('latin1').startsWith('%PDF')) {
+    throw new Error('文件不是有效的 PDF 格式，可能已损坏')
   }
-  for (const slide of bundle.slides) {
-    if (!slide || typeof slide.id !== 'string' || !Array.isArray(slide.elements)) {
-      throw new Error('解析结果格式不正确')
-    }
-  }
-  return { filename, raw, bundle }
+  if (!Buffer.isBuffer(bundleBuf) || bundleBuf.length < 10) throw new Error('解析结果为空，无法设为默认 PPT')
+  if (bundleBuf.indexOf('"slides":[') === -1) throw new Error('解析结果格式不正确')
+  const pages = Number(pageCount)
+  if (!Number.isInteger(pages) || pages < 1) throw new Error('解析结果为空，无法设为默认 PPT')
+  return { filename, file, bundleBuf, pageCount: pages }
 }
 
 async function processUpload(body) {
-  const { filename, raw, bundle } = validateUpload(body)
+  const { filename, file, bundleBuf, pageCount } = validateUpload(body)
 
   const seq = (current?.seq || 0) + 1
   const version = `v${seq}`
@@ -191,7 +179,7 @@ async function processUpload(body) {
     seq,
     version,
     filename,
-    pageCount: bundle.slides.length,
+    pageCount,
     updatedAt: new Date().toISOString(),
   }
 
@@ -200,8 +188,8 @@ async function processUpload(body) {
   const tmpDir = path.join(TMP_DIR, `${version}-${crypto.randomUUID()}`)
   await fsp.mkdir(tmpDir, { recursive: true })
   try {
-    await fsp.writeFile(path.join(tmpDir, 'raw.pptx'), raw)
-    await fsp.writeFile(path.join(tmpDir, 'slides.json'), JSON.stringify(bundle))
+    await fsp.writeFile(path.join(tmpDir, 'raw.file'), file)
+    await fsp.writeFile(path.join(tmpDir, 'slides.json'), bundleBuf)
     await fsp.writeFile(path.join(tmpDir, 'meta.json'), JSON.stringify(meta, null, 2))
     await fsp.rm(versionDir, { recursive: true, force: true })
     await fsp.rename(tmpDir, versionDir)
@@ -213,16 +201,25 @@ async function processUpload(body) {
   }
 
   current = meta
-  // 清理更早的历史版本（当前版本与最近几个版本保留，正在播放的播放端已将数据载入内存，不受影响）
-  await pruneOldVersions()
+  // 仅保留当前默认版本：历史版本立即清理（各播放端已将文稿载入内存，不受影响）
+  await cleanupVersions()
   broadcastVersion(meta)
   return meta
 }
 
-function readJsonBody(req, maxBytes) {
+/** 读取原始请求体：优先按 Content-Length 一次性预分配（大文件上传避免双倍内存），超限立即断开 */
+function readRawBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
-    const chunks = []
+    const declared = parseInt(req.headers['content-length'] || '0', 10) || 0
+    if (declared > maxBytes) {
+      reject(new Error(`请求体过大（上限约 ${Math.round(maxBytes / 1024 / 1024)}MB）`))
+      req.destroy()
+      return
+    }
+    const buffer = declared > 0 ? Buffer.allocUnsafe(declared) : Buffer.alloc(0)
+    const chunks = buffer.length > 0 ? null : []
     let size = 0
+    let offset = 0
     req.on('data', chunk => {
       size += chunk.length
       if (size > maxBytes) {
@@ -230,15 +227,15 @@ function readJsonBody(req, maxBytes) {
         req.destroy()
         return
       }
-      chunks.push(chunk)
+      if (buffer.length > 0) {
+        chunk.copy(buffer, offset)
+        offset += chunk.length
+      }
+      else chunks.push(chunk)
     })
     req.on('end', () => {
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-      }
-      catch {
-        reject(new Error('请求体不是有效的 JSON'))
-      }
+      if (buffer.length > 0) resolve(buffer.subarray(0, offset))
+      else resolve(Buffer.concat(chunks))
     })
     req.on('error', reject)
   })
@@ -359,7 +356,9 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 200, {
           publicBaseUrl: PUBLIC_URL || null,
           maxUploadMB: MAX_UPLOAD_MB,
-          acceptTypes: ['.pptx'],
+          acceptTypes: ['.pptx', '.pdf'],
+          // 上传信封协议版本：前端据此检测与服务端版本是否一致（旧版服务端无此字段）
+          uploadEnvelope: 2,
         })
         return
       }
@@ -383,7 +382,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && pathname === '/default-ppt-api/current/file') {
         if (!current) sendJson(res, 404, { error: '暂无默认 PPT' })
         else {
-          const raw = await fsp.readFile(path.join(VERSIONS_DIR, current.version, 'raw.pptx'))
+          const raw = await fsp.readFile(path.join(VERSIONS_DIR, current.version, 'raw.file'))
           res.writeHead(200, {
             'Content-Type': MIME['.pptx'],
             'Content-Length': raw.length,
@@ -400,12 +399,28 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'POST' && pathname === '/default-ppt-api/upload') {
         try {
-          // 请求体上限 = 文件上限的 4 倍（base64 膨胀 + 解析数据）+ 32MB 余量
-          const body = await readJsonBody(req, MAX_UPLOAD_MB * 1024 * 1024 * 4 + 32 * 1024 * 1024)
+          // 二进制信封 v2 请求体：
+          //   [4 字节头长度][4 字节 bundle 长度][头部 JSON{filename,pageCount}][bundle 字节][原始文件字节]
+          // bundle（解析后的文稿 JSON）不再整体 JSON 往返，按字节范围原样落盘，
+          // 服务端内存占用不随文稿大小膨胀。请求体上限 = 文件上限 + 3GB（bundle 余量）。
+          const body = await readRawBody(req, MAX_UPLOAD_MB * 1024 * 1024 + 3 * 1024 * 1024 * 1024)
+          if (body.length < 8) throw new Error('请求体为空')
+          const headerLen = body.readUInt32BE(0)
+          const bundleLen = body.readUInt32BE(4)
+          if (headerLen > 1024 * 1024 || bundleLen > 3 * 1024 * 1024 * 1024) throw new Error('请求头/解析数据超出限制')
+          let header
+          try {
+            header = JSON.parse(body.subarray(8, 8 + headerLen).toString('utf8'))
+          }
+          catch {
+            throw new Error('请求头不是有效的 JSON')
+          }
+          header.bundleBuf = body.subarray(8 + headerLen, 8 + headerLen + bundleLen)
+          header.file = body.subarray(8 + headerLen + bundleLen)
           // 串行处理：按提交顺序完成“校验→保存→原子切换→通知”
           const result = await (uploadChain = uploadChain.then(
-            () => processUpload(body),
-            () => processUpload(body),
+            () => processUpload(header),
+            () => processUpload(header),
           ))
           log(`上传成功：v${result.seq} ${result.filename}（${result.pageCount} 页）`)
           sendJson(res, 200, { ok: true, ...publicMeta() })
