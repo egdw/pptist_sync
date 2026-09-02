@@ -1,0 +1,5 @@
+dist/
+runtime/*.tar.xz
+data/
+server.pid
+server.log

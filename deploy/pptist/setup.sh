@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# ============================================================
+# PPTist 一键部署脚本（RK3588 / 任意 Linux aarch64 或 x64）
+# 用法：把整个 pptist 目录拷到板子上，然后执行：
+#   ./setup.sh              常规部署（生成桌面快捷方式）
+#   ./setup.sh --autostart  部署 + 开机自启大屏播放页
+# ============================================================
+set -e
+cd "$(dirname "$0")"
+DIR="$(pwd)"
+
+# ---- 1. 解压包内自带的 Node.js 运行时（无需联网） ----
+NODE_TARBALL=$(ls runtime/node-v*-linux-arm64.tar.xz 2>/dev/null | head -1 || true)
+if [ ! -x "runtime/node/bin/node" ]; then
+  if [ -n "$NODE_TARBALL" ]; then
+    echo "[setup] 解压自带 Node.js 运行时 ..."
+    command -v xz >/dev/null 2>&1 || { echo "[setup] 缺少 xz，正在安装 xz-utils ..."; (sudo apt-get install -y xz-utils || apt-get install -y xz-utils) >/dev/null 2>&1 || true; }
+    mkdir -p runtime/node
+    tar -xJf "$NODE_TARBALL" -C runtime/node --strip-components=1
+    echo "[setup] Node 运行时就绪：$(runtime/node/bin/node --version)"
+  fi
+fi
+
+# ---- 2. 选择 Node：优先包内自带，其次系统 Node（需 >= 18） ----
+if [ -x "runtime/node/bin/node" ]; then
+  NODE_CMD="$DIR/runtime/node/bin/node"
+else
+  if command -v node >/dev/null 2>&1 && node -e 'process.exit(parseInt(process.versions.node) >= 18 ? 0 : 1)'; then
+    NODE_CMD="$(command -v node)"
+    echo "[setup] 使用系统 Node.js：$($NODE_CMD --version)"
+  else
+    echo "[setup] 错误：未找到可用的 Node.js（需 >= 18）"
+    echo "        请联网后重新执行本脚本，或手动安装 Node.js 18+"
+    exit 1
+  fi
+fi
+
+# ---- 3. 生成配置文件（已有则不覆盖；自动探测局域网 IP） ----
+LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}' | tr -d '[:space:]')"
+PORT_DEFAULT=8686
+if [ ! -f config.env ]; then
+  cat > config.env <<EOF
+# PPTist 服务配置（修改后重新运行 start-pptist.sh 生效）
+PPTIST_PORT=${PORT_DEFAULT}
+# 对外访问地址：其他电脑通过该地址访问上传页（已自动填入本机局域网 IP）
+PPTIST_PUBLIC_URL=http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}
+PPTIST_DATA_DIR=${DIR}/data
+PPTIST_MAX_UPLOAD_MB=100
+EOF
+  echo "[setup] 已生成 config.env（局域网 IP：${LAN_IP:-未探测到}）"
+fi
+
+# ---- 4. 赋予脚本执行权限 ----
+chmod +x start-pptist.sh stop-pptist.sh 2>/dev/null || true
+
+# ---- 5. 生成桌面快捷方式 ----
+DESKTOP_DIR="${XDG_DESKTOP_DIR:-$HOME/Desktop}"
+[ -d "$DESKTOP_DIR" ] || DESKTOP_DIR="$HOME/桌面"
+[ -d "$DESKTOP_DIR" ] || DESKTOP_DIR="$HOME/Desktop"
+mkdir -p "$DESKTOP_DIR" "$HOME/.local/share/applications"
+
+make_desktop() { # $1=输出文件  $2=名称  $3=页面参数  $4=备注
+  cat > "$1" <<EOF
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=$2
+Comment=$4
+Exec=${DIR}/start-pptist.sh ${3}
+Path=${DIR}
+Icon=${DIR}/logo.png
+Terminal=false
+Categories=Network;Presentation;
+StartupNotify=true
+EOF
+  chmod +x "$1"
+}
+
+make_desktop "$HOME/.local/share/applications/pptist-play.desktop"  "PPTist 大屏播放" "play"   "启动 PPTist 服务并打开大屏播放页"
+make_desktop "$HOME/.local/share/applications/pptist-editor.desktop" "PPTist 编辑器" "editor" "启动 PPTist 服务并打开编辑器"
+make_desktop "$HOME/.local/share/applications/pptist-upload.desktop" "PPTist 上传页" "upload" "启动 PPTist 服务并打开上传管理页"
+
+# 桌面上只放“大屏播放”主入口，避免杂乱；上传/编辑器可从应用菜单启动
+cp "$HOME/.local/share/applications/pptist-play.desktop" "$DESKTOP_DIR/pptist-play.desktop" 2>/dev/null || true
+chmod +x "$DESKTOP_DIR/pptist-play.desktop" 2>/dev/null || true
+echo "[setup] 已创建桌面快捷方式：PPTist 大屏播放（编辑器/上传页在应用菜单中）"
+
+# ---- 6. 可选：开机自启（通电即放映） ----
+if [ "$1" = "--autostart" ]; then
+  mkdir -p "$HOME/.config/autostart"
+  make_desktop "$HOME/.config/autostart/pptist-play.desktop" "PPTist 大屏播放" "play" "开机自动启动 PPTist 服务并打开播放页"
+  echo "[setup] 已设置开机自启（登录桌面后自动打开大屏播放页）"
+fi
+
+# ---- 7. 首次部署自检 ----
+echo "[setup] 自检：启动服务并检查接口 ..."
+"./start-pptist.sh" play || true
+
+echo ""
+echo "=============================================="
+echo " 部署完成！"
+echo "   播放页   : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/play"
+echo "   上传页   : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/upload  （局域网其他电脑访问）"
+echo "   编辑器   : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/editor"
+echo " 桌面双击「PPTist 大屏播放」即可一键启动。"
+echo "=============================================="
