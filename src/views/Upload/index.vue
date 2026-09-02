@@ -24,9 +24,9 @@
             @drop.prevent="handleDrop"
           >
             <i-icon-park-outline:upload class="drop-icon" />
-            <div class="drop-text">点击选择或拖入 .pptx 文件</div>
-            <div class="drop-sub">允许类型：.pptx；大小上限：{{ config.maxUploadMB }}MB</div>
-            <input ref="fileInputRef" type="file" accept=".pptx" hidden @change="handleFileChange" />
+            <div class="drop-text">点击选择或拖入 .pptx / .pdf 文件</div>
+            <div class="drop-sub">允许类型：.pptx / .pdf；大小上限：{{ config.maxUploadMB }}MB（PDF 每页将渲染为图片页，页面文字自动提取为备注）</div>
+            <input ref="fileInputRef" type="file" accept=".pptx,.pdf" hidden @change="handleFileChange" />
           </div>
 
           <div class="file-info" v-if="selectedFile">
@@ -93,20 +93,24 @@ import useImport from '@/hooks/useImport'
 import {
   fetchDefaultPptConfig,
   fetchDefaultPptCurrent,
-  fileToBase64,
   subscribeDefaultPptEvents,
   uploadDefaultPpt,
+  type DefaultPptBundle,
   type DefaultPptConfig,
   type DefaultPptMeta,
 } from '@/services/defaultPpt'
 import { copyText } from '@/utils/clipboard'
 import message from '@/utils/message'
+import * as pdfjsLib from 'pdfjs-dist'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 const slidesStore = useSlidesStore()
 const { slides } = storeToRefs(slidesStore)
 const { importPPTXFile, exporting } = useImport()
 
-const config = ref<DefaultPptConfig>({ publicBaseUrl: null, maxUploadMB: 100, acceptTypes: ['.pptx'] })
+const config = ref<DefaultPptConfig>({ publicBaseUrl: null, maxUploadMB: 300, acceptTypes: ['.pptx', '.pdf'] })
 const currentMeta = ref<DefaultPptMeta>({ exists: false })
 const selectedFile = ref<File | null>(null)
 const parsed = ref(false)
@@ -117,6 +121,8 @@ const errorText = ref('')
 const successText = ref('')
 const progressPercent = ref(0)
 const dragging = ref(false)
+// 解析产物：PPTX 经导入管线写入 store 后读取；PDF 由 pdf.js 逐页渲染生成
+const parsedBundle = ref<DefaultPptBundle | null>(null)
 // 解析前播种的空页 id：导入完成后 store 中仍只有该页，说明解析失败
 let seedSlideId = ''
 
@@ -145,8 +151,10 @@ const formatTime = (time?: string) => {
 
 const selectFile = () => fileInputRef.value?.click()
 
+const isPdf = (file: File) => /\.pdf$/i.test(file.name)
+
 const validateFile = (file: File): string | null => {
-  if (!/\.pptx$/i.test(file.name)) return '仅支持 .pptx 文件'
+  if (!/\.(pptx|pdf)$/i.test(file.name)) return '仅支持 .pptx / .pdf 文件'
   if (file.size > config.value.maxUploadMB * 1024 * 1024) return `文件超过大小上限（${config.value.maxUploadMB}MB）`
   if (file.size === 0) return '文件内容为空'
   return null
@@ -154,12 +162,70 @@ const validateFile = (file: File): string | null => {
 
 const resetParseState = () => {
   parsed.value = false
+  parsedBundle.value = null
   errorText.value = ''
   successText.value = ''
   progressPercent.value = 0
 }
 
-const handleFile = (file: File) => {
+/** PDF：pdf.js 逐页渲染为图片页（每页背景图铺满），页面文字提取到演讲者备注 */
+const parsePdf = async (file: File): Promise<DefaultPptBundle> => {
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise
+  const slides: DefaultPptBundle['slides'] = []
+  let viewportRatio = 0.5625
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    statusText.value = `解析中（PDF 第 ${i}/${pdf.numPages} 页）...`
+    const page = await pdf.getPage(i)
+    const baseViewport = page.getViewport({ scale: 1 })
+    if (i === 1 && baseViewport.width > 0) {
+      viewportRatio = baseViewport.height / baseViewport.width
+    }
+    const scale = Math.min(1920 / baseViewport.width, 4)
+    const viewport = page.getViewport({ scale })
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.floor(viewport.width)
+    canvas.height = Math.floor(viewport.height)
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('浏览器不支持 Canvas 渲染')
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    await page.render({ canvasContext: context, viewport }).promise
+    const src = canvas.toDataURL('image/jpeg', 0.9)
+
+    let remark = ''
+    try {
+      const textContent = await page.getTextContent()
+      const lines = textContent.items
+        .map(item => ('str' in item ? item.str : ''))
+        .join('')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+      remark = lines.join('\n')
+    }
+    catch { /* 文字提取失败不影响页面 */ }
+
+    slides.push({
+      id: nanoid(10),
+      elements: [],
+      background: { type: 'image', image: { src, size: 'cover' } },
+      remark,
+    })
+    page.cleanup()
+  }
+
+  if (!slides.length) throw new Error('PDF 没有可显示的页面')
+  return {
+    title: file.name.replace(/\.pdf$/i, ''),
+    slides,
+    theme: {},
+    viewportSize: 1000,
+    viewportRatio,
+  }
+}
+
+const handleFile = async (file: File) => {
   const invalid = validateFile(file)
   if (invalid) {
     errorText.value = invalid
@@ -168,10 +234,27 @@ const handleFile = (file: File) => {
   }
   selectedFile.value = file
   resetParseState()
-  statusText.value = '解析中 ...'
   parsing.value = true
 
-  // 解析前重置为单页空文稿：复用现有 PPTX 导入管线（导入结果写入本地 store，本页不进入放映、不发送放映事件）
+  if (isPdf(file)) {
+    statusText.value = '解析中 ...'
+    try {
+      parsedBundle.value = await parsePdf(file)
+      parsed.value = true
+      statusText.value = `解析成功：共 ${parsedBundle.value.slides.length} 页，可以上传`
+    }
+    catch (error) {
+      errorText.value = `PDF 解析失败：${(error as Error)?.message || '未知错误'}（加密 PDF 不支持，请先解除密码）`
+      statusText.value = ''
+    }
+    finally {
+      parsing.value = false
+    }
+    return
+  }
+
+  // PPTX：解析前重置为单页空文稿，复用现有导入管线（结果写入本地 store，本页不进入放映、不发送放映事件）
+  statusText.value = '解析中 ...'
   seedSlideId = nanoid(10)
   slidesStore.setSlides([{ id: seedSlideId, elements: [] }])
   slidesStore.updateSlideIndex(0)
@@ -190,7 +273,7 @@ const handleDrop = (e: DragEvent) => {
   if (file) handleFile(file)
 }
 
-// 现有导入流程无完成回调，通过 exporting 状态判断解析结束
+// PPTX 现有导入流程无完成回调，通过 exporting 状态判断解析结束
 watch(exporting, value => {
   if (value || !selectedFile.value || !parsing.value) return
   parsing.value = false
@@ -204,12 +287,19 @@ watch(exporting, value => {
     parsed.value = false
     return
   }
+  parsedBundle.value = {
+    title: slidesStore.title,
+    slides: JSON.parse(JSON.stringify(resultSlides)),
+    theme: JSON.parse(JSON.stringify(slidesStore.theme)),
+    viewportSize: slidesStore.viewportSize,
+    viewportRatio: slidesStore.viewportRatio,
+  }
   parsed.value = true
   statusText.value = `解析成功：共 ${resultSlides.length} 页，可以上传`
 })
 
 const upload = async () => {
-  if (!selectedFile.value || !parsed.value || uploading.value) return
+  if (!selectedFile.value || !parsed.value || !parsedBundle.value || uploading.value) return
   uploading.value = true
   errorText.value = ''
   successText.value = ''
@@ -217,19 +307,12 @@ const upload = async () => {
   progressPercent.value = 0
 
   try {
-    const fileBase64 = await fileToBase64(selectedFile.value)
     progressPercent.value = 100
     statusText.value = '保存中 ...'
     const result = await uploadDefaultPpt({
       filename: selectedFile.value.name,
-      fileBase64,
-      bundle: {
-        title: slidesStore.title,
-        slides: JSON.parse(JSON.stringify(slides.value)),
-        theme: JSON.parse(JSON.stringify(slidesStore.theme)),
-        viewportSize: slidesStore.viewportSize,
-        viewportRatio: slidesStore.viewportRatio,
-      },
+      file: selectedFile.value,
+      bundle: parsedBundle.value,
     }, percent => (progressPercent.value = percent))
     successText.value = '已设为默认 PPT，更新通知已发送。播放页面加载完成后将自动切换。'
     statusText.value = ''

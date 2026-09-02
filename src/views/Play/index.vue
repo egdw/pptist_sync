@@ -6,6 +6,7 @@
         :key="`base-${loadedSeq}`"
         :changeViewMode="changeViewMode"
         keepPlayingOnFullscreenEsc
+        clickToAdvance
       />
       <PresenterView
         v-else-if="viewMode === 'presenter'"

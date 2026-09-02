@@ -31,3 +31,4 @@ coverage
 
 # 默认 PPT 数据（服务端持久化）
 /data
+deploy/*.tar.gz

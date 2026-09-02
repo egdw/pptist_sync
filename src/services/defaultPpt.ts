@@ -75,13 +75,22 @@ export async function fetchDefaultPptSlides(): Promise<{ bundle: DefaultPptBundl
  * onProgress 回调上报上传进度（0-100）。
  */
 export function uploadDefaultPpt(
-  payload: { filename: string; fileBase64: string; bundle: DefaultPptBundle },
+  payload: { filename: string; file: File; bundle: DefaultPptBundle },
   onProgress?: (percent: number) => void,
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
+    // 二进制信封：[4 字节头长度][头部 JSON{filename,bundle}][原始文件字节]，文件不做 base64 膨胀
+    const headerBytes = new TextEncoder().encode(JSON.stringify({
+      filename: payload.filename,
+      bundle: payload.bundle,
+    }))
+    const lengthBytes = new ArrayBuffer(4)
+    new DataView(lengthBytes).setUint32(0, headerBytes.length, false)
+    const body = new Blob([lengthBytes, headerBytes, payload.file])
+
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${API_BASE}/upload`)
-    xhr.setRequestHeader('Content-Type', 'application/json')
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
     xhr.upload.onprogress = event => {
       if (event.lengthComputable && onProgress) {
         onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)))
@@ -99,7 +108,7 @@ export function uploadDefaultPpt(
       else reject(new Error(data?.error || `上传失败（${xhr.status}）`))
     }
     xhr.onerror = () => reject(new Error('网络错误，上传失败'))
-    xhr.send(JSON.stringify(payload))
+    xhr.send(body)
   })
 }
 

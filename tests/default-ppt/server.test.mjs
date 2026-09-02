@@ -75,14 +75,14 @@ function stopServer() {
 }
 
 async function upload(filename, rawBuffer, bundle) {
+  // 与前端一致的二进制信封：[4 字节头长度][头部 JSON{filename,bundle}][原始文件字节]
+  const header = Buffer.from(JSON.stringify({ filename, bundle }))
+  const lengthPrefix = Buffer.alloc(4)
+  lengthPrefix.writeUInt32BE(header.length)
   const res = await fetch(`${BASE}/default-ppt-api/upload`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      filename,
-      fileBase64: rawBuffer.toString('base64'),
-      bundle,
-    }),
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: Buffer.concat([lengthPrefix, header, rawBuffer]),
   })
   return { status: res.status, data: await res.json() }
 }
@@ -173,12 +173,32 @@ try {
     assert.equal(notPptx.status, 400)
     const badExt = await upload('a.txt', pkBytes('x'), makeBundle(1, 'x'))
     assert.equal(badExt.status, 400)
+    const badPdf = await upload('a.pdf', Buffer.from('hello'), makeBundle(1, 'x'))
+    assert.equal(badPdf.status, 400)
     const empty = await upload('a.pptx', pkBytes('x'), makeBundle(0, 'x'))
     assert.equal(empty.status, 400)
     assert.match(empty.data.error, /为空/)
     const current = await (await fetch(`${BASE}/default-ppt-api/current`)).json()
     assert.equal(current.exists, false)
-    ok('类型 / magic bytes / 空文稿校验拒绝，且不产生默认文稿')
+    ok('类型 / magic bytes（PPTX 与 PDF）/ 空文稿校验拒绝，且不产生默认文稿')
+  }
+
+  // 2.5 PDF 上传：原文件按 .pdf 保存并可下载
+  {
+    const pdfRaw = Buffer.concat([Buffer.from('%PDF-1.4'), Buffer.from('pdf-bytes')])
+    const pdfBundle = makeBundle(3, 'P')
+    const result = await upload('文档.pdf', pdfRaw, pdfBundle)
+    assert.equal(result.status, 200)
+    assert.equal(result.data.seq, 1)
+    const fileRes = await fetch(`${BASE}/default-ppt-api/current/file`)
+    const bytes = Buffer.from(await fileRes.arrayBuffer())
+    assert.deepEqual([...bytes], [...pdfRaw])
+    assert.match(fileRes.headers.get('content-disposition') || '', /pdf/)
+    const bundle = await (await fetch(`${BASE}/default-ppt-api/current/slides`)).json()
+    assert.equal(bundle.slides.length, 3)
+    // 用一个新 PPTX 覆盖，后续用例从 v2 继续
+    await upload('第一版.pptx', pkBytes('first-presentation-bytes'), makeBundle(2, 'A'))
+    ok('PDF 上传：魔法数校验通过，原文件与解析数据按版本保存')
   }
 
   // 3. 正常上传 v1：元数据、解析数据、原文件三者一致
@@ -187,14 +207,14 @@ try {
     const result = await upload('第一版.pptx', raw1, makeBundle(2, 'A'))
     assert.equal(result.status, 200)
     assert.equal(result.data.ok, true)
-    assert.equal(result.data.seq, 1)
+    assert.equal(result.data.seq, 3)
     assert.equal(result.data.pageCount, 2)
     const current = await (await fetch(`${BASE}/default-ppt-api/current`)).json()
     assert.equal(current.exists, true)
-    assert.equal(current.version, 'v1')
+    assert.equal(current.version, 'v3')
     assert.equal(current.filename, '第一版.pptx')
     const slidesRes = await fetch(`${BASE}/default-ppt-api/current/slides`)
-    assert.equal(slidesRes.headers.get('x-pptist-version'), 'v1')
+    assert.equal(slidesRes.headers.get('x-pptist-version'), 'v3')
     const bundle = await slidesRes.json()
     assert.equal(bundle.slides.length, 2)
     assert.equal(bundle.slides[0].remark, 'A 第一页备注\n第二行中文')
@@ -211,8 +231,8 @@ try {
     await sleep(500) // 确保订阅已建立
     await upload('第二版.pptx', pkBytes('second'), makeBundle(3, 'B'))
     const events = await ssePromise
-    assert.equal(events[0].data.seq, 1)
-    assert.equal(events[events.length - 1].data.seq, 2)
+    assert.equal(events[0].data.seq, 3)
+    assert.equal(events[events.length - 1].data.seq, 4)
     assert.equal(events[events.length - 1].data.filename, '第二版.pptx')
     ok('SSE 通知：连接推送当前版本，新上传立即广播新版本')
   }
@@ -222,7 +242,7 @@ try {
     const bad = await upload('第三版.pptx', Buffer.from('not-a-zip'), makeBundle(1, 'C'))
     assert.equal(bad.status, 400)
     const current = await (await fetch(`${BASE}/default-ppt-api/current`)).json()
-    assert.equal(current.seq, 2)
+    assert.equal(current.seq, 4)
     assert.equal(current.filename, '第二版.pptx')
     ok('解析/校验失败：旧默认 PPT 保持不变')
   }
@@ -233,15 +253,15 @@ try {
       upload('第三版.pptx', pkBytes('third'), makeBundle(2, 'C')),
       upload('第四版.pptx', pkBytes('fourth'), makeBundle(4, 'D')),
     ])
-    assert.equal(r3.data.seq, 3)
-    assert.equal(r4.data.seq, 4)
+    assert.equal(r3.data.seq, 5)
+    assert.equal(r4.data.seq, 6)
     const current = await (await fetch(`${BASE}/default-ppt-api/current`)).json()
-    assert.equal(current.seq, 4)
+    assert.equal(current.seq, 6)
     assert.equal(current.filename, '第四版.pptx')
     const bundle = await (await fetch(`${BASE}/default-ppt-api/current/slides`)).json()
     assert.equal(bundle.slides.length, 4)
     assert.equal(bundle.slides[0].id, 'slide-D-0')
-    ok('连续上传：按提交顺序串行处理，最终为最新提交的版本（v4）')
+    ok('连续上传：按提交顺序串行处理，最终为最新提交的版本（v6）')
   }
 
   // 7. 历史版本保留数
@@ -269,7 +289,7 @@ try {
   await startServer()
   {
     const current = await (await fetch(`${BASE}/default-ppt-api/current`)).json()
-    assert.equal(current.seq, 4)
+    assert.equal(current.seq, 6)
     assert.equal(current.filename, '第四版.pptx')
     const bundle = await (await fetch(`${BASE}/default-ppt-api/current/slides`)).json()
     assert.equal(bundle.slides.length, 4)

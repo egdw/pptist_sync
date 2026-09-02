@@ -260,6 +260,41 @@ try {
   assert.equal(rootHasDefault, true)
   ok('/ 恢复为原有编辑器界面（打开同一份默认 PPT，原使用习惯不受影响）')
 
+  // —— PDF 支持与点击翻页 ——
+  // B 上传 PDF（真实 pdf.js 解析，每页渲染为图片页，文字提取为备注）
+  const eventsBeforePdf = receivedEvents.length
+  await pageB.goto(`${BASE}/upload`, { waitUntil: 'domcontentloaded' })
+  await sleep(800)
+  const pdfInput = await pageB.$('input[type=file]')
+  assert.ok(pdfInput, '上传页存在文件选择控件')
+  await pdfInput.uploadFile(path.join(ROOT, 'tests/default-ppt/sample-v1.pdf'))
+  await pageB.waitForFunction(() => (document.querySelector('.step-status')?.textContent || '').includes('解析成功'), { timeout: 60000 })
+  await pageB.click('.primary-btn')
+  await pageB.waitForFunction(() => (document.querySelector('.success-text')?.textContent || '').includes('已设为默认 PPT'), { timeout: 30000 })
+  ok('上传 PDF：pdf.js 真实解析 2 页并设为默认')
+
+  // A 自动切换到 PDF 文稿（2 页），页码指示显示 1 / 2
+  await pageA.waitForFunction(() => (document.querySelector('.page-number')?.textContent || '').replace(/\s/g, '').includes('1/2'), { timeout: 20000 })
+  ok('PDF 热替换：播放页自动切换到 PDF 文稿（从第 1 页开始）')
+
+  // 点击画面翻页 → 第 2 页
+  await pageA.evaluate(() => {
+    document.querySelector('.screen-slide-list').parentElement.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await sleep(600)
+  const pageNoAfterClick = await pageA.evaluate(() => (document.querySelector('.page-number')?.textContent || '').replace(/\s/g, ''))
+  assert.equal(pageNoAfterClick, '幻灯片2/2')
+  ok('播放页点击画面翻页：点击后进入第 2 页')
+
+  // 四字段事件：ended（v2 第 1 页）+ started（PDF 第 1 页，备注为 PDF 提取文字）
+  const pdfSwap = receivedEvents.slice(eventsBeforePdf).filter(e => e.event !== 'slide.changed')
+  assert.equal(pdfSwap.length, 2, `PDF 热替换应恰好产生 ended+started：${JSON.stringify(receivedEvents.slice(eventsBeforePdf))}`)
+  assert.equal(pdfSwap[0].event, 'presentation.ended')
+  assert.equal(pdfSwap[1].event, 'presentation.started')
+  assert.match(pdfSwap[1].notes, /PDF Slide One/)
+  assert.equal(pdfSwap[1].page, 1)
+  ok('PDF 热替换四字段事件：ended + started，started 备注为 PDF 提取的文字')
+
   // 右上角「全屏」按钮：点击进入原生全屏（带真实用户激活），不影响放映；已全屏时按钮隐藏
   await pageA.bringToFront()
   const fullscreenNowBefore = await pageA.evaluate(() => !!document.fullscreenElement)
@@ -274,8 +309,8 @@ try {
     await sleep(800)
   }
   const fullscreenNow = await pageA.evaluate(() => !!document.fullscreenElement)
-  const stillPlaying = await pageA.evaluate(() => document.body.innerText.includes('第二版-热替换成功-NEW'))
-  assert.equal(stillPlaying, true)
+  const stillOnPdf = await pageA.evaluate(() => (document.querySelector('.page-number')?.textContent || '').replace(/\s/g, ''))
+  assert.equal(stillOnPdf, '幻灯片2/2')
   if (fullscreenNow) ok('播放页处于原生全屏，放映继续（点击全屏按钮或刷新后自动恢复）')
   else console.log('  · （无头环境未进入原生全屏，真实浏览器中通过全屏按钮/首次翻页进入；放映不受影响）')
 
@@ -294,7 +329,8 @@ finally {
   // 无论成功失败都关闭浏览器，否则残留的 Chrome 子进程会让本进程无法退出
   try {
     if (browser) await browser.close()
-  } catch { /* 忽略 */ }
+  }
+  catch { /* 忽略 */ }
   await stopServer()
   if (wsServer) await new Promise(resolve => wsServer.close(resolve))
   fs.rmSync(DATA_DIR, { recursive: true, force: true })
