@@ -19,9 +19,9 @@
     </div>
     <BaseView v-else :changeViewMode="noop" />
 
-    <div class="status-chip" :class="statusLevel">
+    <div class="status-chip" :class="statusLevel" :title="statusText">
       <span class="dot"></span>
-      <span>{{ statusText }}</span>
+      <span class="txt">{{ statusLevel === 'controlled' ? '受控' : (statusLevel === 'connected' ? '等待' : '离线') }}</span>
     </div>
   </div>
 </template>
@@ -261,29 +261,37 @@ onUnmounted(() => {
 
 .status-chip {
   position: fixed;
-  left: 12px;
-  bottom: 12px;
+  left: 10px;
+  bottom: 10px;
   z-index: 100;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 20px;
-  background: rgba(20, 22, 28, .8);
-  color: #aaa;
-  font-size: 12px;
-  backdrop-filter: blur(4px);
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(18, 20, 26, .45);
+  color: #9aa0ad;
+  font-size: 10px;
+  line-height: 1.4;
+  opacity: .6;
+  transition: opacity .25s;
+  cursor: default;
+
+  &:hover { opacity: 1; }
 
   .dot {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: #888;
+    flex-shrink: 0;
   }
-  &.connected .dot { background: #5b9bd5; }
+  &.connected {
+    .dot { background: #5b9bd5; }
+  }
   &.controlled {
-    color: #d6e4ff;
     .dot { background: #2ecc71; }
+    .txt { color: #8fd3a8; }
   }
 }
 </style>

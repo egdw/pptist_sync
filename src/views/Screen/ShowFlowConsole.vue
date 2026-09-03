@@ -1,14 +1,22 @@
 <template>
-  <div class="showflow-console" :class="{ collapsed }">
-    <div class="console-head" @click="collapsed = !collapsed">
+  <div class="showflow-console" :class="{ collapsed, hovered }" @mouseenter="hovered = true" @mouseleave="hovered = false">
+    <!-- 迷你条：默认仅显示此行，不干扰放映 -->
+    <div class="mini-bar" @click="collapsed = !collapsed">
       <span class="dot" :class="phaseClass"></span>
-      <span class="title">多屏联动</span>
-      <span class="step-count">STEP {{ stepNo }} / {{ flow.steps.length }}</span>
-      <span class="collapse-icon">{{ collapsed ? '▲' : '▼' }}</span>
+      <span class="mini-step">{{ stepNo }}/{{ flow.steps.length }}</span>
+      <span class="mini-main">{{ miniMain }}</span>
+      <span class="mini-sec" :class="{ off: !secondaryOnline && !!snapshot?.secondaryPageId }">{{ miniSec }}</span>
     </div>
 
-    <template v-if="!collapsed">
-      <div class="console-body" v-if="currentStep">
+    <!-- 完整面板：悬停或手动展开时显示 -->
+    <div class="console-panel" v-show="!collapsed || hovered">
+      <div class="panel-head">
+        <span class="title">多屏联动</span>
+        <span class="step-count">STEP {{ stepNo }} / {{ flow.steps.length }}</span>
+        <span class="collapse-icon" @click="collapsed = !collapsed">{{ collapsed ? '▲' : '▼' }}</span>
+      </div>
+
+      <div class="panel-body" v-if="currentStep">
         <div class="target-row" :class="{ active: !!snapshot?.mainPageId }">
           <span class="role main">主</span>
           <span class="name">{{ mainTitle }}</span>
@@ -25,39 +33,31 @@
           <span class="status">✓</span>
         </div>
 
-        <div class="next-row" v-if="nextStep">
-          下一步：{{ nextStep.label || nextTargetSummary(nextStep) }}
-        </div>
+        <div class="next-row" v-if="nextStep">下一步：{{ nextStep.label || nextTargetSummary(nextStep) }}</div>
         <div class="next-row end" v-else>已到最后一步</div>
 
         <div class="abnormal" v-if="phase === 'TRANSITIONING'">
-          {{ flow.confirmationMode === 'strict' ? '等待确认中（严格模式）...' : '确认超时，宽松模式已放行' }}
-        </div>
-
-        <div class="online-bar">
-          <span :class="{ on: true }">主屏 在线</span>
-          <span :class="{ on: secondaryOnline }">副屏 {{ secondaryOnline ? '在线' : '离线' }}</span>
+          {{ flow.confirmationMode === 'strict' ? '等待确认中...' : '确认超时，已放行' }}
         </div>
 
         <div class="actions">
-          <button @click="showFlowStore.next()">→ 下一步</button>
-          <button @click="showFlowStore.previous()">← 上一步</button>
+          <button @click="showFlowStore.next()">→</button>
+          <button @click="showFlowStore.previous()">←</button>
           <button @click="showFlowStore.resendCurrentStep()">重发</button>
-          <button @click="showFlowStore.resyncAllScreens()">重同步</button>
-          <button @click="showFlowStore.forceCompleteStep()">强制完成</button>
-          <button @click="showFlowStore.skipSecondaryScreen()">跳过副屏</button>
-          <button class="danger" @click="exitFlow">退出联动</button>
+          <button @click="showFlowStore.resyncAllScreens()">同步</button>
+          <button @click="showFlowStore.forceCompleteStep()">强完</button>
+          <button @click="showFlowStore.skipSecondaryScreen()">跳副</button>
+          <button class="danger" @click="exitFlow">退出</button>
         </div>
-        <div class="hint">方向键 / 滚轮按虚拟步骤推进，与真实页码无关</div>
       </div>
-      <div class="console-body" v-else>
-        <div class="hint">尚未开始：按 → 执行 Step 1</div>
+      <div class="panel-body" v-else>
+        <div class="next-row">按 → 执行 Step 1</div>
         <div class="actions">
           <button @click="showFlowStore.next()">→ 开始</button>
-          <button class="danger" @click="exitFlow">退出联动</button>
+          <button class="danger" @click="exitFlow">退出</button>
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
@@ -71,7 +71,9 @@ import message from '@/utils/message'
 const showFlowStore = useShowFlowStore()
 const { flow, phase, snapshot, currentStepIndex, online } = storeToRefs(showFlowStore)
 
-const collapsed = ref(false)
+/** 默认收起：放映时仅保留迷你条 */
+const collapsed = ref(true)
+const hovered = ref(false)
 
 const currentStep = computed<ShowStep | null>(() => flow.value.steps[currentStepIndex.value] ?? null)
 const nextStep = computed<ShowStep | null>(() => flow.value.steps[currentStepIndex.value + 1] ?? null)
@@ -83,6 +85,19 @@ const phaseClass = computed(() => ({
 }))
 
 const secondaryOnline = computed(() => online.value.secondary)
+
+// ---- 迷你条超简文本 ----
+const miniMain = computed(() => {
+  if (!snapshot.value?.mainPageId) return '主·'
+  const t = mainTitle.value
+  return t.length > 6 ? '主:' + t.slice(0, 6) : '主:' + t
+})
+const miniSec = computed(() => {
+  if (!snapshot.value?.secondaryPageId) return '副·'
+  const t = secondaryTitle.value
+  const s = t.length > 6 ? '副:' + t.slice(0, 6) : '副:' + t
+  return s
+})
 
 const mainTitle = computed(() => {
   if (!snapshot.value?.mainPageId) return '保持'
@@ -121,74 +136,104 @@ watch(() => flow.value.enabled, enabled => {
 <style lang="scss" scoped>
 .showflow-console {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  right: 10px;
+  bottom: 10px;
   z-index: 100;
-  width: 320px;
-  background: rgba(20, 22, 28, .92);
-  border-radius: 10px;
-  color: #ddd;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, .35);
-  overflow: hidden;
+  color: #ccc;
+  font-size: 11px;
+  opacity: .55;
+  transition: opacity .25s;
+
+  &:hover {
+    opacity: 1;
+  }
 }
 
-.console-head {
+/* —— 迷你条 —— */
+.mini-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: rgba(18, 20, 26, .6);
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+  line-height: 1.4;
 
   .dot {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: #888;
+    flex-shrink: 0;
     &.ready { background: #2ecc71; }
     &.transitioning { background: #f39c12; animation: blink 1s infinite; }
   }
-  .title { font-weight: 600; }
-  .step-count { flex: 1; color: #9aa0ad; font-size: 12px; }
-  .collapse-icon { font-size: 10px; color: #9aa0ad; }
+  .mini-step { font-weight: 600; color: #9aa0ad; }
+  .mini-main, .mini-sec { color: #8892a0; max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
+  .mini-sec.off { color: #e07b7b; }
 }
 
 @keyframes blink {
   50% { opacity: .3; }
 }
 
-.console-body {
-  padding: 4px 12px 12px;
+/* —— 完整面板（悬停/展开时） —— */
+.console-panel {
+  margin-top: 4px;
+  width: 232px;
+  background: rgba(18, 20, 26, .88);
+  border-radius: 8px;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, .3);
+  overflow: hidden;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  cursor: pointer;
+  user-select: none;
+
+  .title { font-weight: 600; font-size: 11px; }
+  .step-count { flex: 1; color: #9aa0ad; font-size: 10px; }
+  .collapse-icon { font-size: 9px; color: #9aa0ad; }
+}
+
+.panel-body {
+  padding: 0 8px 8px;
 }
 
 .target-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 6px;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 5px;
   background: rgba(255, 255, 255, .05);
-  margin-bottom: 5px;
+  margin-bottom: 3px;
   color: #777;
 
-  &.active { color: #eee; }
+  &.active { color: #ddd; }
   .name {
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .status { font-size: 12px; color: #2ecc71; }
+  .status { font-size: 10px; color: #2ecc71; }
 }
 
 .role {
   flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  font-size: 11px;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  font-size: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -200,8 +245,8 @@ watch(() => flow.value.enabled, enabled => {
 }
 
 .next-row {
-  padding: 6px 8px 0;
-  font-size: 12px;
+  padding: 4px 6px 0;
+  font-size: 10px;
   color: #9aa0ad;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -211,47 +256,31 @@ watch(() => flow.value.enabled, enabled => {
 }
 
 .abnormal {
-  margin-top: 6px;
-  padding: 5px 8px;
-  border-radius: 6px;
+  margin-top: 4px;
+  padding: 3px 6px;
+  border-radius: 5px;
   background: rgba(243, 156, 18, .15);
   color: #f3b04b;
-  font-size: 12px;
-}
-
-.online-bar {
-  display: flex;
-  gap: 12px;
-  padding: 6px 8px 0;
-  font-size: 11px;
-
-  span { color: #666; }
-  span.on { color: #2ecc71; }
+  font-size: 10px;
 }
 
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 9px;
+  gap: 4px;
+  margin-top: 6px;
 
   button {
-    border: 1px solid rgba(255, 255, 255, .18);
-    background: rgba(255, 255, 255, .07);
-    color: #ddd;
-    border-radius: 5px;
-    font-size: 12px;
-    padding: 4px 9px;
+    border: 1px solid rgba(255, 255, 255, .16);
+    background: rgba(255, 255, 255, .06);
+    color: #ccc;
+    border-radius: 4px;
+    font-size: 10px;
+    padding: 2px 7px;
     cursor: pointer;
 
     &:hover { background: rgba(255, 255, 255, .14); }
     &.danger:hover { border-color: #e07b7b; color: #e07b7b; }
   }
-}
-
-.hint {
-  margin-top: 7px;
-  font-size: 11px;
-  color: #666;
 }
 </style>
