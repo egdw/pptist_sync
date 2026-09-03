@@ -10,14 +10,14 @@ body {
   margin:0; color:var(--ink); font-family:"Microsoft YaHei","PingFang SC",sans-serif;
   background:
     radial-gradient(circle at 50% -15%, rgba(35,119,215,.28), transparent 46%),
-    linear-gradient(180deg,#061831 0%,#031123 100%);
+    linear-gradient(180deg,#0b2745 0%,#06203f 100%);
 }
 .reveal { font-family:inherit; font-size:33px; color:var(--ink); }
 .reveal .slides { text-align:left; }
 .reveal .slides > section {
   /* Reveal requires slides to remain absolutely positioned. v4 accidentally changed this to relative,
      causing all 16 slides to stack vertically when opened from file://. */
-  position:absolute; width:100%; height:900px; margin:0; padding:74px 34px 138px; overflow:hidden;
+  position:absolute; width:100%; height:900px; margin:0; padding:88px 34px 138px; overflow:hidden;
   background:
     linear-gradient(90deg,rgba(39,132,255,.045) 1px,transparent 1px),
     linear-gradient(rgba(39,132,255,.035) 1px,transparent 1px),
@@ -75,7 +75,7 @@ body {
 }
 .work-layout.roles-1,.work-layout.roles-2 { grid-template-columns:245px minmax(0,1fr) 1px; }
 .work-layout.roles-3,.work-layout.roles-4 { grid-template-columns:235px minmax(0,1fr) 235px; }
-.role-side { display:grid; gap:14px; align-content:center; min-width:0; }
+.role-side { display:grid; gap:14px; align-content:center; min-width:0; padding-bottom:30px; }
 .role-side:empty { visibility:hidden; }
 .roles-2 .role-side-left,.roles-4 .role-side-left,.roles-4 .role-side-right { grid-template-rows:1fr 1fr; align-content:stretch; }
 .roles-3 .role-side-left { grid-template-rows:1fr 1fr; align-content:stretch; }
