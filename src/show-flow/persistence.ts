@@ -78,3 +78,19 @@ export function loadShowFlowState(): ShowFlowPersistence {
 export function saveShowFlowState(state: ShowFlowPersistence): void {
   localStorage.setItem(SHOW_FLOW_STORAGE_KEY, JSON.stringify(state))
 }
+
+export async function loadShowFlowStateFromServer(): Promise<ShowFlowPersistence | null> {
+  const response = await fetch('/showflow-api/state', { cache: 'no-store' })
+  if (!response.ok) throw new Error(`读取服务端方案失败（${response.status}）`)
+  const data = await response.json()
+  return data?.exists && data?.state ? data.state as ShowFlowPersistence : null
+}
+
+export async function saveShowFlowStateToServer(state: ShowFlowPersistence): Promise<void> {
+  const response = await fetch('/showflow-api/state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state }),
+  })
+  if (!response.ok) throw new Error(`保存服务端方案失败（${response.status}）`)
+}

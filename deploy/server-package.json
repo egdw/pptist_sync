@@ -1,0 +1,10 @@
+{
+  "name": "pptist-rk3588-server",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.100",
+    "@napi-rs/canvas-linux-arm64-gnu": "0.1.100",
+    "ws": "^8.21.0"
+  }
+}

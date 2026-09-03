@@ -24,3 +24,6 @@
 6. `data-cue` 可显示事件提醒；JS提供实时更新接口，便于后续接 MQTT/WebSocket。
 
 详细属性见 `TEMPLATE_GUIDE.md`。
+
+需要交给 AI 修改 UI 时，请先让它完整阅读项目级指南：
+`../../doc/REVEAL_MARKDOWN_UI_GUIDE.md`。

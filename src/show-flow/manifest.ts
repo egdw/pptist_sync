@@ -11,6 +11,8 @@
 import { nanoid } from 'nanoid'
 import type { Slide } from '@/types/slides'
 import type { PageManifest } from './types'
+import { parsePptLcdRemark } from './lcd/ppt-note-parser.ts'
+import { parseMarkdownLcd } from './lcd/md-lcd-parser.ts'
 
 const SECTION_SEPARATOR = /^---\s*$/m
 const SLIDE_COMMENT_RE = /<!--\s*\.slide:\s*([\s\S]*?)-->/
@@ -60,13 +62,15 @@ export function parseMarkdownManifest(md: string): PageManifest[] {
         break
       }
     }
+    const id = attrs['page-id'] || stablePageHash(trimmed)
     manifest.push({
-      id: attrs['page-id'] || stablePageHash(trimmed),
+      id,
       index: manifest.length + 1,
       title: title || `未命名页 ${manifest.length + 1}`,
       subtitle,
       stage: attrs['stage'] || undefined,
       tabletScene: attrs['tablet-scene'] || undefined,
+      lcd: parseMarkdownLcd(attrs, id),
     })
   }
   return manifest
@@ -83,6 +87,7 @@ export function buildPptistManifest(slides: Slide[]): PageManifest[] {
     index: i + 1,
     title: extractSlideTitle(slide, i + 1),
     notes: slide.remark || '',
+    lcd: parsePptLcdRemark(slide.remark, slide.id),
   }))
 }
 

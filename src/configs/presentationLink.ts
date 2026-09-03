@@ -89,6 +89,31 @@ export function savePresentationLinkConfig(config: PresentationLinkConfig) {
     persist.ws.token = ''
   }
   localStorage.setItem(PRESENTATION_LINK_STORAGE_KEY, JSON.stringify(persist))
+  void fetch('/presentation-link-api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config }),
+  }).catch(() => { /* 服务端不可达时保留本地缓存 */ })
+}
+
+/** 服务端为配置事实来源；localStorage 仅用于服务端暂不可用时的缓存。 */
+export async function loadPresentationLinkConfigFromServer(): Promise<PresentationLinkConfig> {
+  try {
+    const response = await fetch('/presentation-link-api/config', { cache: 'no-store' })
+    if (!response.ok) throw new Error(String(response.status))
+    const data = await response.json()
+    if (data?.exists && data.config) {
+      const config = normalizePresentationLinkConfig({ ...data.config, rememberCredentials: true })
+      localStorage.setItem(PRESENTATION_LINK_STORAGE_KEY, JSON.stringify(config))
+      return config
+    }
+    const local = loadPresentationLinkConfig()
+    await fetch('/presentation-link-api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: local }),
+    })
+    return local
+  }
+  catch {
+    return loadPresentationLinkConfig()
+  }
 }
 
 /** 将内存中的配置（含未记住的密码）快照下来，供本次会话内通道重连使用 */

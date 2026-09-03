@@ -48,6 +48,9 @@ PPTIST_PUBLIC_URL=http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}
 PPTIST_DATA_DIR=${DIR}/data
 # 副屏文稿（PPTist B）独立存储目录：与主屏完全独立的两份 PPT
 PPTIST_SECONDARY_DATA_DIR=${DIR}/data/secondary-ppt
+# LCD JPEG 缓存与岗位照片（升级时请保留 data/）
+PPTIST_LED_CACHE_DIR=${DIR}/data/led-cache
+PPTIST_LED_PORTRAIT_DIR=${DIR}/data/led-assets/portraits
 # 上传大小上限（MB），默认 1024（1GB）；需要调整时取消注释并修改
 # PPTIST_MAX_UPLOAD_MB=1024
 EOF
@@ -62,7 +65,7 @@ else
 fi
 
 # ---- 4. 赋予脚本执行权限 ----
-chmod +x start-pptist.sh stop-pptist.sh 2>/dev/null || true
+chmod +x start-pptist.sh stop-pptist.sh service-run.sh enable-boot-service.sh disable-boot-service.sh 2>/dev/null || true
 
 # ---- 5. 生成桌面快捷方式 ----
 DESKTOP_DIR="${XDG_DESKTOP_DIR:-$HOME/Desktop}"
@@ -124,5 +127,7 @@ echo "   编辑器   : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/editor"
 echo "   联动编排 : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/showflow"
 echo "   副屏PPTist: http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/secondary"
 echo "   副屏Reveal: http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/reveal"
+echo "   LCD预览   : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/led-preview"
 echo " 桌面双击「PPTist 大屏播放」即可一键启动。"
+echo " 后台服务开机自启：bash enable-boot-service.sh"
 echo "=============================================="

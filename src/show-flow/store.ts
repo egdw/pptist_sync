@@ -14,9 +14,11 @@ import { PptistScreenAdapter } from './adapters/pptist'
 import { PptistRemoteScreenAdapter } from './adapters/pptistRemote'
 import { RevealMarkdownScreenAdapter, type ShowFlowTransport } from './adapters/reveal'
 import { ShowFlowController } from './controller'
+import { LcdController } from './lcd/lcd-controller'
+import { publishPresentationMqtt } from '@/utils/presentation/bridge'
 import { buildPptistManifest } from './manifest'
 import { reconcileSteps } from './reconciliation'
-import { loadShowFlowState, saveShowFlowState } from './persistence'
+import { loadShowFlowState, loadShowFlowStateFromServer, saveShowFlowState, saveShowFlowStateToServer } from './persistence'
 import { ShowFlowWsClient, resolveShowFlowWsUrl } from './websocket/client'
 import type {
   ContentSource,
@@ -50,14 +52,30 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const mainSource = computed(() => sources.value.find(s => s.role === 'main'))
   const secondarySource = computed(() => sources.value.find(s => s.role === 'secondary'))
 
-  const save = () => {
-    saveShowFlowState({
+  let serverHydrated = false
+  const currentPersistence = () => ({
       version: 2,
       sources: sources.value,
       flow: flow.value,
       flows: flowList.value,
       activeFlowId: activeFlowId.value,
+    } as const)
+  const save = () => {
+    const state = currentPersistence()
+    saveShowFlowState(state)
+    if (serverHydrated) void saveShowFlowStateToServer(state).catch(error => {
+      console.warn('[ShowFlow] 服务端方案保存失败，已保留本地缓存', error)
     })
+  }
+
+  let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
+  const scheduleAutoSave = () => {
+    if (!initialized.value) return
+    if (autoSaveTimer) clearTimeout(autoSaveTimer)
+    autoSaveTimer = setTimeout(() => {
+      autoSaveTimer = null
+      save()
+    }, 120)
   }
 
   // ---------- Manifest ----------
@@ -78,6 +96,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
 
   let wsClient: ShowFlowWsClient | null = null
   let controller: ShowFlowController | null = null
+  let lcdController: LcdController | null = null
 
   // ---------- Controller 镜像（响应式） ----------
   const phase = ref<ShowFlowPhase>('READY')
@@ -90,6 +109,14 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const lastReport = ref<ReconciliationReport | null>(null)
 
   const createController = () => {
+    if (!lcdController) lcdController = new LcdController({
+      getPage: pageId => secondaryManifest.value.find(page => page.id === pageId),
+      publish: publishPresentationMqtt,
+      onNotice: (text, type) => {
+        if (type === 'error') message.error(text, { duration: 3500 })
+        else if (type === 'success') message.success(text, { duration: 1500 })
+      },
+    })
     const c = new ShowFlowController(
       () => ({
         main: mainAdapter!,
@@ -114,6 +141,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
           // 阶段 4 接入 MQTT / 平板 scene；当前仅记录
           console.info(`[ShowFlow] step ${stepId} event action (${timing})`)
         },
+        onLcdPage: (pageId, force) => lcdController?.applyPage(pageId, force),
       },
       () => ({
         enabled: flow.value.enabled,
@@ -177,10 +205,11 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   // ---------- Reconciliation ----------
   const reconcile = (role: 'main' | 'secondary') => {
     const manifest = role === 'main' ? mainManifest.value : secondaryManifest.value
-    if (!manifest.length && role === 'secondary') return
+    // 冷启动时内容源尚未异步加载完成；空清单不等同于“用户删除了全部页面”。
+    if (!manifest.length) return
     const sourceLabel = role === 'main' ? '主屏' : '副屏'
     const poolKey = role
-    const result = reconcileSteps(manifest, flow.value.steps, poolOf(poolKey as 'main' | 'secondary'), sourceLabel)
+    const result = reconcileSteps(manifest, flow.value.steps, poolOf(poolKey as 'main' | 'secondary'), sourceLabel, role)
     flow.value.steps = result.steps
     poolOf(poolKey as 'main' | 'secondary').splice(0, poolOf(poolKey as 'main' | 'secondary').length, ...result.unmapped)
     lastReport.value = result.report
@@ -193,7 +222,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   // 主屏 slides id 集合变化（增删/导入/替换文稿）时自动对账
   const slideIdsKey = computed(() => slidesStore.slides.map(s => s.id).join(','))
   watch(slideIdsKey, () => {
-    if (!initialized) return
+    if (!initialized.value) return
     const oldManifest = mainManifest.value
     refreshMainManifest()
     const changed = oldManifest.length !== mainManifest.value.length ||
@@ -263,9 +292,34 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const init = () => {
     if (initialized.value) return
     initialized.value = true
+    watch(flowList, scheduleAutoSave, { deep: true })
+    watch(sources, scheduleAutoSave, { deep: true })
+    window.addEventListener('beforeunload', save)
+    void bootstrap()
+  }
+
+  const bootstrap = async () => {
+    try {
+      const remote = await loadShowFlowStateFromServer()
+      if (remote?.flows?.length || remote?.flow?.steps) {
+        sources.value = remote.sources?.length ? remote.sources : sources.value
+        flowList.value = remote.flows?.length ? remote.flows : [remote.flow]
+        activeFlowId.value = remote.activeFlowId && flowList.value.some(item => item.id === remote.activeFlowId)
+          ? remote.activeFlowId : flowList.value[0].id
+        saveShowFlowState(currentPersistence())
+      }
+      serverHydrated = true
+      // 服务端尚无方案时，用当前电脑的本地缓存初始化共享方案。
+      if (!remote) await saveShowFlowStateToServer(currentPersistence())
+    }
+    catch (error) {
+      serverHydrated = true
+      console.warn('[ShowFlow] 服务端方案不可用，暂用本地缓存', error)
+    }
+
     mainAdapter = new PptistScreenAdapter()
     refreshMainManifest()
-    refreshSecondaryManifest()
+    await refreshSecondaryManifest()
     reconcile('main')
     reconcile('secondary')
 

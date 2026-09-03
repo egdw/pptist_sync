@@ -20,10 +20,12 @@
     "test:showflow:secondary": "node tests/showflow-ws/run-secondary.mjs",
     "test:showflow:secondary-doc": "node tests/showflow-ws/secondary-doc.test.mjs",
     "test:showflow:reconciliation": "node --experimental-strip-types tests/showflow-ws/reconciliation.test.mts"
+    ,"test:showflow:lcd": "node --experimental-strip-types tests/showflow-ws/lcd.test.mts"
   },
   "author": "pipipi_pikachu@163.com",
   "homepage": "https://github.com/pipipi-pikachu/PPTist",
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.100",
     "animate.css": "^4.1.1",
     "axios": "^1.7.9",
     "clipboard": "^2.0.11",

@@ -91,5 +91,12 @@ ok(r6.steps.length === 0 && r6.report.removedSteps.includes('s9'), '双屏引用
 const r7 = reconcileSteps(pages(['a']), [step('s10', 'x', 'y', { tablet: { scene: 's1' } })], [], '主屏')
 ok(r7.steps.length === 1 && r7.steps[0].main?.action !== 'goto' && r7.steps[0].tablet?.scene === 's1', '事件步骤仅清除页面引用、保留步骤')
 
+// 冷启动/双内容源：主屏清单只能对账主屏引用，绝不能误删副屏引用（反之亦然）
+const crossRole = [step('cross', 'main-a', 'secondary-b')]
+const mainOnly = reconcileSteps(pages(['main-a']), crossRole, [], '主屏', 'main')
+ok(mainOnly.steps[0].secondary.pageId === 'secondary-b', '主屏对账不删除副屏引用')
+const secondaryOnly = reconcileSteps(pages(['secondary-b']), crossRole, [], '副屏', 'secondary')
+ok(secondaryOnly.steps[0].main.pageId === 'main-a', '副屏对账不删除主屏引用')
+
 console.log(`\n结果: ${pass} 通过`)
-process.exit(pass === 16 ? 0 : 1)
+process.exit(pass === 20 ? 0 : 1)

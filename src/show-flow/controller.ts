@@ -38,6 +38,8 @@ export interface ControllerCallbacks {
   onStepChange: (snapshot: StepTargetSnapshot | null) => void
   onNotice: (text: string, type?: 'info' | 'warning' | 'error' | 'success') => void
   onEventAction?: (stepId: string, timing: string) => void
+  /** 仅 Controller 调用；副屏 ACK 完成后应用页面 LCD，force 用于重新同步。 */
+  onLcdPage?: (pageId: string | null, force?: boolean) => Promise<void> | void
 }
 
 export class ShowFlowController {
@@ -260,6 +262,10 @@ export class ShowFlowController {
     this.currentStepIndex = stepIndex
     this.snapshot = targetSnapshot
     this.callbacks.onStepChange(targetSnapshot)
+    // LCD 与 resolved secondary snapshot 绑定。真实副屏导航时必须等 ACK（若关闭确认则在导航下发后）。
+    if (secondaryPageToApply && (allAcked || !needsConfirm)) {
+      await this.callbacks.onLcdPage?.(targetSnapshot.secondaryPageId)
+    }
     if (timing !== 'beforeNavigate') this.callbacks.onEventAction?.(step.id, timing)
 
     // 只有全部 ACK 后才回到 READY；strict 失败时保持 TRANSITIONING，由手动兜底解锁
@@ -360,6 +366,7 @@ export class ShowFlowController {
       role: 'secondary',
     })
     this.callbacks.onNotice('已向全部屏幕发送状态同步', 'info')
+    void this.callbacks.onLcdPage?.(snap.secondaryPageId, true)
   }
 
   /** 手动兜底：强制完成当前步骤（strict 卡死时解锁） */

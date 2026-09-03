@@ -44,6 +44,7 @@ export function reconcileSteps(
   steps: ShowStep[],
   unmapped: string[],
   sourceLabel: string,
+  role: 'main' | 'secondary' | 'both' = 'both',
 ): { steps: ShowStep[]; unmapped: string[]; report: ReconciliationReport } {
   const report = emptyReport()
   const aliveIds = new Set(newManifest.map(p => p.id))
@@ -51,8 +52,8 @@ export function reconcileSteps(
   // 1. 清理失效引用
   const prunedSteps = steps.map(step => {
     const copy: ShowStep = JSON.parse(JSON.stringify(step))
-    pruneTargets(copy, aliveIds, 'main', report)
-    pruneTargets(copy, aliveIds, 'secondary', report)
+    if (role === 'main' || role === 'both') pruneTargets(copy, aliveIds, 'main', report)
+    if (role === 'secondary' || role === 'both') pruneTargets(copy, aliveIds, 'secondary', report)
     return copy
   })
 

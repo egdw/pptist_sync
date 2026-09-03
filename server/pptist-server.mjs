@@ -39,6 +39,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { attachShowFlowWs } from './showflow-ws.mjs'
+import { createLedRenderService } from './led/render-service.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -51,6 +52,11 @@ const REVEAL_DIR = path.resolve(process.env.PPTIST_REVEAL_DIR || path.join(ROOT,
 const PUBLIC_URL = (process.env.PPTIST_PUBLIC_URL || '').replace(/\/+$/, '')
 const MAX_UPLOAD_MB = Math.max(1, Number(process.env.PPTIST_MAX_UPLOAD_MB || 1024))
 const REMOTE_API = process.env.PPTIST_REMOTE_API !== undefined ? process.env.PPTIST_REMOTE_API : 'https://server.pptist.cn'
+const LED_CACHE_DIR = path.resolve(process.env.PPTIST_LED_CACHE_DIR || path.join(ROOT, 'data/led-cache'))
+const LED_PORTRAIT_DIR = path.resolve(process.env.PPTIST_LED_PORTRAIT_DIR || path.join(ROOT, 'data/led-assets/portraits'))
+const SHOWFLOW_STATE_FILE = path.resolve(process.env.PPTIST_SHOWFLOW_STATE_FILE || path.join(ROOT, 'data/showflow/state.json'))
+const PRESENTATION_LINK_CONFIG_FILE = path.resolve(process.env.PPTIST_PRESENTATION_LINK_CONFIG_FILE || path.join(ROOT, 'data/config/presentation-link.json'))
+const ledRenderService = createLedRenderService({ cacheDir: LED_CACHE_DIR, portraitDir: LED_PORTRAIT_DIR, publicUrl: PUBLIC_URL })
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -440,6 +446,81 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname
 
   try {
+    if (pathname === '/presentation-link-api/config') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      if (req.method === 'GET') {
+        try { sendJson(res, 200, { exists: true, config: JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8')) }) }
+        catch (error) {
+          if (error.code === 'ENOENT') sendJson(res, 200, { exists: false, config: null })
+          else throw error
+        }
+        return
+      }
+      if (req.method === 'POST') {
+        const chunks = []; let size = 0
+        for await (const chunk of req) { size += chunk.length; if (size > 1024 * 1024) throw new Error('配置数据过大'); chunks.push(chunk) }
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+        if (!body.config?.mqtt || !body.config?.ws) { sendJson(res, 400, { error: '无效的放映联动配置' }); return }
+        await fsp.mkdir(path.dirname(PRESENTATION_LINK_CONFIG_FILE), { recursive: true })
+        await atomicWrite(PRESENTATION_LINK_CONFIG_FILE, JSON.stringify(body.config, null, 2))
+        sendJson(res, 200, { ok: true }); return
+      }
+      sendJson(res, 405, { error: 'Method Not Allowed' }); return
+    }
+
+    if (pathname === '/showflow-api/state') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      if (req.method === 'GET') {
+        try { sendJson(res, 200, { exists: true, state: JSON.parse(await fsp.readFile(SHOWFLOW_STATE_FILE, 'utf8')) }) }
+        catch (error) {
+          if (error.code === 'ENOENT') sendJson(res, 200, { exists: false, state: null })
+          else throw error
+        }
+        return
+      }
+      if (req.method === 'POST') {
+        const chunks = []; let size = 0
+        for await (const chunk of req) { size += chunk.length; if (size > 5 * 1024 * 1024) throw new Error('ShowFlow 方案数据不能超过 5MB'); chunks.push(chunk) }
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+        if (!body.state || !Array.isArray(body.state.sources) || !Array.isArray(body.state.flows)) { sendJson(res, 400, { error: '无效的 ShowFlow 方案数据' }); return }
+        await fsp.mkdir(path.dirname(SHOWFLOW_STATE_FILE), { recursive: true })
+        await atomicWrite(SHOWFLOW_STATE_FILE, JSON.stringify(body.state, null, 2))
+        sendJson(res, 200, { ok: true }); return
+      }
+      sendJson(res, 405, { error: 'Method Not Allowed' }); return
+    }
+    if (req.method === 'POST' && pathname === '/led-render-api/render') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+      if (!body.state || typeof body.state !== 'object') {
+        sendJson(res, 400, { error: 'state 必须是 LcdSceneState' })
+        return
+      }
+      const origin = `${req.socket.encrypted ? 'https' : 'http'}://${req.headers.host || `localhost:${PORT}`}`
+      sendJson(res, 200, await ledRenderService.render(body.state, origin))
+      return
+    }
+    const portraitMatch = pathname.match(/^\/led-render-api\/portrait\/(manager|platform|twin|hardware)$/)
+    if (portraitMatch && req.method === 'POST') {
+      const chunks = []; let size = 0
+      for await (const chunk of req) {
+        size += chunk.length
+        if (size > 8 * 1024 * 1024) throw new Error('头像不能超过 8MB')
+        chunks.push(chunk)
+      }
+      const data = Buffer.concat(chunks)
+      if (!data.length) { sendJson(res, 400, { error: '头像文件为空' }); return }
+      await fsp.mkdir(LED_PORTRAIT_DIR, { recursive: true })
+      await atomicWrite(path.join(LED_PORTRAIT_DIR, `${portraitMatch[1]}.image`), data)
+      sendJson(res, 200, { ok: true, role: portraitMatch[1] })
+      return
+    }
+    if (pathname.startsWith('/led/')) {
+      await serveStatic(req, res, pathname.replace(/^\/led/, '') || '/', LED_CACHE_DIR)
+      return
+    }
     // CORS：默认同源部署；如需跨域部署可用环境变量放开（这里对 API 统一允许，静态资源同源）
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {

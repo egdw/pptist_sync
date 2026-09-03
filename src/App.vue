@@ -2,6 +2,7 @@
   <PlayView v-if="isPlayRoute && !isAudienceMode" />
   <UploadView v-else-if="isUploadRoute && !isAudienceMode" />
   <SecondaryView v-else-if="isSecondaryRoute && !isAudienceMode" />
+  <LedPreviewView v-else-if="isLedPreviewRoute && !isAudienceMode" />
   <ShowFlowView v-else-if="isShowFlowRoute && !isAudienceMode && slides.length && !screening" />
   <template v-else>
     <template v-if="slides.length">
@@ -33,6 +34,7 @@ import PlayView from './views/Play/index.vue'
 import UploadView from './views/Upload/index.vue'
 import ShowFlowView from './views/ShowFlow/index.vue'
 import SecondaryView from './views/Secondary/index.vue'
+import LedPreviewView from './views/LedPreview/index.vue'
 import FullscreenSpin from '@/components/FullscreenSpin.vue'
 
 const _isPC = isPC()
@@ -55,6 +57,7 @@ const isUploadRoute = routePath === '/upload'
 const isShowFlowRoute = routePath === '/showflow'
 // 双 PPTist 模式的副屏（PPTist B）只读播放页：自行加载服务端上传文稿
 const isSecondaryRoute = routePath === '/secondary'
+const isLedPreviewRoute = routePath === '/led-preview' || routePath === '/lcd-preview'
 
 if (import.meta.env.MODE !== 'development') {
   window.onbeforeunload = () => false
@@ -68,7 +71,7 @@ onUnmounted(() => destroyPresentationBridge())
 // /secondary 副屏页例外 —— 它是受控端，只运行 SecondaryShowFlowClient，不能注册 controller 角色
 const showFlowStore = useShowFlowStore()
 onMounted(() => {
-  if (!isAudienceMode && !isSecondaryRoute) showFlowStore.init()
+  if (!isAudienceMode && !isSecondaryRoute && !isLedPreviewRoute) showFlowStore.init()
 })
 
 onMounted(async () => {

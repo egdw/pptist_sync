@@ -12,6 +12,17 @@ export type ScreenRole = 'main' | 'secondary'
 
 export type SourceKind = 'pptist' | 'pptist-remote' | 'reveal-md'
 
+export const LCD_ROLES = ['manager', 'platform', 'twin', 'hardware'] as const
+export type LcdRole = typeof LCD_ROLES[number]
+
+export interface LcdSceneState {
+  source: { type: 'pptist' | 'reveal-md'; pageId: string }
+  stage: string
+  lead: LcdRole | null
+  active: LcdRole[]
+  roles: Record<LcdRole, { task: string }>
+}
+
 /** 内容源（主屏 / 副屏各自注册一个） */
 export interface ContentSource {
   id: string
@@ -39,6 +50,8 @@ export interface PageManifest {
   stage?: string
   /** Reveal: data-tablet-scene */
   tabletScene?: string
+  /** 副屏页面定义的完整 LCD 快照；null/缺省表示保持上一状态 */
+  lcd?: LcdSceneState | null
 }
 
 export interface ScreenAdapter {

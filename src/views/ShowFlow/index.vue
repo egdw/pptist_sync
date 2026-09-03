@@ -1,7 +1,8 @@
 <template>
   <div class="show-flow-editor">
     <header class="header">
-      <div class="left">
+      <div class="header-section scheme-tools">
+        <span class="section-label">方案管理</span>
         <Select
           class="scheme-select"
           :value="activeFlowId"
@@ -23,7 +24,9 @@
           <Button size="small" @click="openSaveAs()">另存为</Button>
           <Button size="small" :class="{ 'confirm-arm': deleteArmed }" @click="deleteSchemeClick()">{{ deleteArmed ? '确认删除？' : '删除方案' }}</Button>
         </template>
-        <Divider :margin="10" />
+      </div>
+      <div class="header-section flow-settings">
+        <span class="section-label">编排设置</span>
         <Input
           class="flow-name"
           :value="flow.name"
@@ -48,7 +51,7 @@
           @update:value="v => updateFlowMeta({ confirmationMode: v as 'strict' | 'loose' })"
         />
       </div>
-      <div class="right">
+      <div class="header-section page-tools">
         <template v-if="roleTaken">
           <span class="ws-status warn">控制台在其他窗口</span>
           <Button size="small" type="primary" @click="showFlowStore.takeoverController()">接管控制台</Button>
@@ -57,7 +60,11 @@
         <span v-else class="ws-status online">控制服务已连接</span>
         <Button size="small" @click="openSecondaryScreen">打开副屏页</Button>
         <Button size="small" @click="refreshSecondary">刷新副屏清单</Button>
-        <Button size="small" type="primary" @click="enterScreeningWithFlow">开始联动放映</Button>
+        <Button size="small" @click="openLedPreview">LCD 预览与调试</Button>
+      </div>
+      <div class="launch-area">
+        <span class="launch-hint">放映操作</span>
+        <Button class="launch-button" type="primary" @click="enterScreeningWithFlow">开始联动放映</Button>
       </div>
     </header>
 
@@ -383,6 +390,8 @@ const openSecondaryScreen = () => {
   window.open(url, '_blank')
 }
 
+const openLedPreview = () => window.open('/led-preview', '_blank')
+
 /** 切换副屏内容源类型：kind 切换时清掉旧 mdPath 语义，重新拉清单并对账 */
 const switchSecondaryKind = (kind: 'pptist-remote' | 'reveal-md') => {
   if (secondarySource.value?.kind === kind) return
@@ -415,24 +424,47 @@ onMounted(() => {
 .header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
   background: #fff;
   border-bottom: 1px solid #e5e5e5;
 
-  .left {
+  .header-section {
     display: flex;
     align-items: center;
-    gap: 14px;
-    flex: 1;
-    min-width: 0;
-  }
-  .right {
-    display: flex;
-    align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid #e8eaf0;
+    border-radius: 7px;
+    background: #fafbfc;
   }
+  .scheme-tools { flex: 0 1 auto; }
+  .flow-settings { flex: 1 1 500px; }
+  .page-tools { flex: 1 1 460px; }
+  .section-label {
+    color: #7a8190;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .launch-area {
+    margin-left: auto;
+    min-width: 170px;
+    padding: 7px 10px;
+    border: 1px solid #cbd8f5;
+    border-radius: 8px;
+    background: #eef4ff;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+  }
+  .launch-hint { font-size: 11px; color: #63749a; }
+  .launch-button { min-height: 32px; font-weight: 600; }
   .flow-name {
     width: 200px;
   }
@@ -454,15 +486,26 @@ onMounted(() => {
     &.warn { color: #e6a23c; }
   }
   .scheme-select {
-    width: 210px;
+    width: 190px;
     flex-shrink: 0;
   }
   .save-as-input {
-    width: 160px;
+    width: 140px;
   }
   .confirm-arm {
     border-color: #d25f5f !important;
     color: #d25f5f !important;
+  }
+
+  @media (max-width: 1100px) {
+    .scheme-tools, .flow-settings, .page-tools { flex: 1 1 100%; }
+    .launch-area {
+      width: 100%;
+      margin-left: 0;
+      flex-direction: row;
+      align-items: center;
+      justify-content: flex-end;
+    }
   }
 }
 

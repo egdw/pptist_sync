@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 启动 PPTist 服务并打开浏览器页面
-# 用法：./start-pptist.sh [play|editor|upload]   （默认 play）
+# 用法：./start-pptist.sh [play|editor|upload|showflow|secondary|reveal|led-preview]（默认 play）
 #
 # 每次启动都会先清掉所有旧的服务进程（含没有 pid 文件的孤儿进程），
 # 确保磁盘上的新版 server/pptist-server.mjs 与最新配置真正生效。
@@ -10,7 +10,7 @@ DIR="$(pwd)"
 
 PAGE="${1:-play}"
 case "$PAGE" in
-  play|editor|upload|showflow|secondary|reveal) ;;
+  play|editor|upload|showflow|secondary|reveal|led-preview|lcd-preview) ;;
   *) PAGE="play" ;;
 esac
 
@@ -41,6 +41,11 @@ fi
 if [ ! -d "server/node_modules/ws" ]; then
   echo "[pptist] 错误：缺少 server/node_modules/ws（多屏联动 WebSocket 依赖）。"
   echo "        请用最新部署包完整覆盖 server/ 目录后重试。"
+  exit 1
+fi
+if [ ! -d "server/node_modules/@napi-rs/canvas" ]; then
+  echo "[pptist] 错误：缺少 ARM64 LCD 图片渲染依赖 @napi-rs/canvas。"
+  echo "        请使用最新完整部署包覆盖 server/ 目录。"
   exit 1
 fi
 
