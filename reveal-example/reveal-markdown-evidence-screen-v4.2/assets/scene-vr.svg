@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="430" viewBox="0 0 1100 430">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#082a4c"/><stop offset="1" stop-color="#04172c"/></linearGradient></defs>
+<rect width="1100" height="430" rx="8" fill="#041327"/>
+<rect x="24" y="24" width="1052" height="382" rx="6" fill="url(#g)" stroke="#238fcb" stroke-width="2"/>
+<rect x="330" y="190" width="440" height="142" rx="54" fill="#0d3b64" stroke="#31c8ff" stroke-width="4"/>
+<rect x="390" y="220" width="126" height="72" rx="24" fill="#061b32" stroke="#3d7da8" stroke-width="3"/>
+<rect x="584" y="220" width="126" height="72" rx="24" fill="#061b32" stroke="#3d7da8" stroke-width="3"/>
+<text x="550" y="92" text-anchor="middle" font-size="34" font-family="Microsoft YaHei, sans-serif" fill="#e9f8ff">接入实际“VR实时投屏画面”</text>
+<text x="550" y="132" text-anchor="middle" font-size="22" font-family="Microsoft YaHei, sans-serif" fill="#9fc4dc">正式演示时让操作者实时视角占据主画面</text>
+</svg>

@@ -32,6 +32,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { attachShowFlowWs } from './showflow-ws.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -39,6 +40,7 @@ const ROOT = path.resolve(__dirname, '..')
 const PORT = Number(process.env.PPTIST_PORT || 8686)
 const DATA_DIR = path.resolve(process.env.PPTIST_DATA_DIR || path.join(ROOT, 'data/default-ppt'))
 const DIST_DIR = path.resolve(process.env.PPTIST_DIST_DIR || path.join(ROOT, 'dist'))
+const REVEAL_DIR = path.resolve(process.env.PPTIST_REVEAL_DIR || path.join(ROOT, 'reveal-example', 'reveal-markdown-evidence-screen-v4.2'))
 const PUBLIC_URL = (process.env.PPTIST_PUBLIC_URL || '').replace(/\/+$/, '')
 const MAX_UPLOAD_MB = Math.max(1, Number(process.env.PPTIST_MAX_UPLOAD_MB || 1024))
 const REMOTE_API = process.env.PPTIST_REMOTE_API !== undefined ? process.env.PPTIST_REMOTE_API : 'https://server.pptist.cn'
@@ -280,9 +282,9 @@ setInterval(() => {
   }
 }, 25000).unref()
 
-async function serveStatic(req, res, pathname) {
-  let filePath = path.normalize(path.join(DIST_DIR, decodeURIComponent(pathname)))
-  if (!filePath.startsWith(DIST_DIR)) {
+async function serveStatic(req, res, pathname, baseDir = DIST_DIR) {
+  let filePath = path.normalize(path.join(baseDir, decodeURIComponent(pathname)))
+  if (!filePath.startsWith(baseDir)) {
     res.writeHead(403)
     res.end('Forbidden')
     return
@@ -295,7 +297,7 @@ async function serveStatic(req, res, pathname) {
   if (!stat) {
     // SPA 路由回退：无扩展名的路径一律回退到 index.html（/play、/upload、/editor 刷新不 404）
     if (!path.extname(pathname)) {
-      filePath = path.join(DIST_DIR, 'index.html')
+      filePath = path.join(baseDir, 'index.html')
       stat = await fsp.stat(filePath).catch(() => null)
     }
     if (!stat) {
@@ -440,6 +442,12 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
+    // 副屏 Reveal / Markdown 演示页（静态托管）
+    if (pathname === '/reveal' || pathname.startsWith('/reveal/')) {
+      await serveStatic(req, res, pathname.replace(/^\/reveal/, '') || '/', REVEAL_DIR)
+      return
+    }
+
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       sendJson(res, 405, { error: 'Method Not Allowed' })
       return
@@ -455,8 +463,10 @@ const server = http.createServer(async (req, res) => {
 
 await ensureDirs()
 await loadCurrent()
+attachShowFlowWs(server, log)
 server.listen(PORT, '0.0.0.0', () => {
-  log(`服务已启动：http://0.0.0.0:${PORT}（播放页 /play，上传页 /upload，编辑器 /editor）`)
+  log(`服务已启动：http://0.0.0.0:${PORT}（播放页 /play，上传页 /upload，编辑器 /editor，联动编排 /showflow，副屏 Reveal /reveal）`)
+  log(`ShowFlow WebSocket: ws://0.0.0.0:${PORT}/showflow`)
   log(`默认 PPT 目录：${DATA_DIR}`)
   log(`当前默认文稿：${current ? `v${current.seq} ${current.filename}（${current.pageCount} 页）` : '暂无'}`)
 })

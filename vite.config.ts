@@ -39,6 +39,16 @@ export default defineConfig({
         target: process.env.PPTIST_SERVER_ORIGIN || 'http://127.0.0.1:8686',
         changeOrigin: true,
       },
+      // ShowFlow 多屏联动：WebSocket 与副屏 Reveal 静态页（开发模式转发到本地服务端）
+      '/showflow': {
+        target: process.env.PPTIST_SERVER_ORIGIN || 'http://127.0.0.1:8686',
+        ws: true,
+        changeOrigin: true,
+      },
+      '/reveal': {
+        target: process.env.PPTIST_SERVER_ORIGIN || 'http://127.0.0.1:8686',
+        changeOrigin: true,
+      },
       '/api': {
         target: 'https://server.pptist.cn',
         changeOrigin: true,

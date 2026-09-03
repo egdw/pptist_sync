@@ -1,6 +1,7 @@
 <template>
   <PlayView v-if="isPlayRoute && !isAudienceMode" />
   <UploadView v-else-if="isUploadRoute && !isAudienceMode" />
+  <ShowFlowView v-else-if="isShowFlowRoute && !isAudienceMode && slides.length" />
   <template v-else>
     <template v-if="slides.length">
       <Screen v-if="screening" />
@@ -20,6 +21,7 @@ import { LOCALSTORAGE_KEY_DISCARDED_DB } from '@/configs/storage'
 import { deleteDiscardedDB } from '@/utils/database'
 import { isPC } from '@/utils/common'
 import { initPresentationBridge, destroyPresentationBridge } from '@/utils/presentation/bridge'
+import { useShowFlowStore } from '@/show-flow/store'
 import { applyBundleToSlidesStore, fetchDefaultPptCurrent, fetchDefaultPptSlides } from '@/services/defaultPpt'
 import api from '@/services'
 
@@ -28,6 +30,7 @@ import Screen from './views/Screen/index.vue'
 import Mobile from './views/Mobile/index.vue'
 import PlayView from './views/Play/index.vue'
 import UploadView from './views/Upload/index.vue'
+import ShowFlowView from './views/ShowFlow/index.vue'
 import FullscreenSpin from '@/components/FullscreenSpin.vue'
 
 const _isPC = isPC()
@@ -47,6 +50,7 @@ const isAudienceMode = new URLSearchParams(window.location.search).get('mode') =
 const routePath = window.location.pathname.replace(/\/+$/, '') || '/'
 const isPlayRoute = routePath === '/play'
 const isUploadRoute = routePath === '/upload'
+const isShowFlowRoute = routePath === '/showflow'
 
 if (import.meta.env.MODE !== 'development') {
   window.onbeforeunload = () => false
@@ -55,6 +59,12 @@ if (import.meta.env.MODE !== 'development') {
 // 放映联动：主控窗口挂载一次（观众窗口自动跳过），随应用卸载清理
 if (!isAudienceMode) initPresentationBridge()
 onUnmounted(() => destroyPresentationBridge())
+
+// 多屏联动（ShowFlow）：非观众窗口初始化一次（WS 连接、源清单对账）
+const showFlowStore = useShowFlowStore()
+onMounted(() => {
+  if (!isAudienceMode) showFlowStore.init()
+})
 
 onMounted(async () => {
   if (isAudienceMode) {

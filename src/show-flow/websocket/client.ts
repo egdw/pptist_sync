@@ -1,0 +1,104 @@
+/**
+ * Controller 侧 WebSocket 客户端。
+ * 连接 node 端 showflow-ws 服务器；服务器只做角色路由与心跳转发，
+ * 所有业务（NAVIGATE/ACK/SYNC_STATE）由 Controller 收发。
+ */
+import { HEARTBEAT_INTERVAL_MS, OFFLINE_THRESHOLD_MS, SHOWFLOW_WS_PATH } from './protocol'
+import type { ShowFlowMessage, ShowFlowRole } from './protocol'
+import type { ScreenRole } from '../types'
+
+type MessageHandler = (msg: ShowFlowMessage) => void
+
+export interface RemoteEndpointStatus {
+  connected: boolean
+  lastSeen: number
+}
+
+export class ShowFlowWsClient {
+  private ws: WebSocket | null = null
+  private heartbeatTimer = 0
+  private reconnectTimer = 0
+  private closed = false
+
+  /** 各远端角色最近心跳时间（ms 时间戳） */
+  lastSeenByRole = new Map<ShowFlowRole, number>()
+
+  constructor(
+    private url: string,
+    private handlers: { onMessage: MessageHandler; onDisconnect: () => void },
+  ) {}
+
+  connect() {
+    this.closed = false
+    try {
+      this.ws = new WebSocket(this.url)
+    }
+    catch {
+      this.scheduleReconnect()
+      return
+    }
+    this.ws.onopen = () => {
+      this.send({ type: 'HELLO', role: 'controller' })
+      this.startHeartbeat()
+    }
+    this.ws.onmessage = event => {
+      try {
+        const msg = JSON.parse(event.data) as ShowFlowMessage
+        if (msg.type === 'PONG' && msg.role) this.lastSeenByRole.set(msg.role, Date.now())
+        else if (msg.type === 'HELLO_ACK' && msg.role) this.lastSeenByRole.set(msg.role, Date.now())
+        this.handlers.onMessage(msg)
+      }
+      catch { /* 忽略非 JSON 帧 */ }
+    }
+    this.ws.onclose = () => {
+      this.stopHeartbeat()
+      this.handlers.onDisconnect()
+      if (!this.closed) this.scheduleReconnect()
+    }
+    this.ws.onerror = () => this.ws?.close()
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectTimer) return
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = 0
+      this.connect()
+    }, 2000)
+  }
+
+  private startHeartbeat() {
+    this.stopHeartbeat()
+    this.heartbeatTimer = window.setInterval(() => {
+      this.send({ type: 'PING', role: 'controller' })
+    }, HEARTBEAT_INTERVAL_MS)
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    this.heartbeatTimer = 0
+  }
+
+  send(msg: ShowFlowMessage) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
+  }
+
+  /** 判断某远端角色是否在线（6s 内有心跳回应） */
+  isRoleOnline(role: ScreenRole): boolean {
+    const last = this.lastSeenByRole.get(role as ShowFlowRole)
+    if (!last) return false
+    return Date.now() - last < OFFLINE_THRESHOLD_MS
+  }
+
+  destroy() {
+    this.closed = true
+    this.stopHeartbeat()
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = 0
+    this.ws?.close()
+    this.ws = null
+  }
+}
+
+export function buildShowFlowWsUrl(wsBase: string): string {
+  return `${wsBase.replace(/\/+$/, '')}${SHOWFLOW_WS_PATH}`
+}

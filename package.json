@@ -14,7 +14,10 @@
     "prepare": "husky install",
     "test:presentation": "node tests/presentation-link/run.mjs",
     "test:default-ppt": "node tests/default-ppt/server.test.mjs",
-    "test:default-ppt:browser": "node tests/default-ppt/browser.e2e.mjs"
+    "test:default-ppt:browser": "node tests/default-ppt/browser.e2e.mjs",
+    "test:showflow:ws": "node tests/showflow-ws/protocol.test.mjs",
+    "test:showflow:controller": "node tests/showflow-ws/run-controller.mjs",
+    "test:showflow:reconciliation": "node --experimental-strip-types tests/showflow-ws/reconciliation.test.mts"
   },
   "author": "pipipi_pikachu@163.com",
   "homepage": "https://github.com/pipipi-pikachu/PPTist",
@@ -53,7 +56,8 @@
     "tinycolor2": "^1.6.0",
     "tippy.js": "^6.3.7",
     "vue": "^3.5.17",
-    "vuedraggable": "^4.1.0"
+    "vuedraggable": "^4.1.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@commitlint/cli": "^18.4.3",
