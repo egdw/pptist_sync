@@ -62,18 +62,43 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useShowFlowStore } from '@/show-flow/store'
+import { useSlidesStore } from '@/store'
 import type { ShowStep } from '@/show-flow/types'
 import message from '@/utils/message'
+import { captureAndUploadHalf } from '@/show-flow/monitor'
 
 const showFlowStore = useShowFlowStore()
+const slidesStore = useSlidesStore()
 const { flow, phase, snapshot, currentStepIndex, online } = storeToRefs(showFlowStore)
 
 /** 默认收起：放映时仅保留迷你条 */
 const collapsed = ref(true)
 const hovered = ref(false)
+
+// ---- 双 PPT 合成监控：主屏页变化(含首次)自动截图上传，与副屏合成 1280×800 ----
+const screenEl = () => document.querySelector('.screen-slide-list .slide-item.current .slide-content')
+let monitorTimer = 0
+const scheduleMonitorUpload = () => {
+  if (monitorTimer) clearTimeout(monitorTimer)
+  monitorTimer = window.setTimeout(async () => {
+    const el = screenEl()
+    if (!el) return
+    const slidesStore = useSlidesStore()
+    await captureAndUploadHalf('main', el, slidesStore.slideIndex + 1, slidesStore.slides.length)
+  }, 350)
+}
+onMounted(() => {
+  // 首帧渲染完成后上传一次（联动放映「初次打开」）
+  window.setTimeout(scheduleMonitorUpload, 1500)
+})
+onUnmounted(() => { if (monitorTimer) clearTimeout(monitorTimer) })
+watch(() => showFlowStore.snapshot, () => {
+  // 每个虚拟步骤应用后上传最新主屏画面
+  window.setTimeout(scheduleMonitorUpload, 250)
+})
 
 const currentStep = computed<ShowStep | null>(() => flow.value.steps[currentStepIndex.value] ?? null)
 const nextStep = computed<ShowStep | null>(() => flow.value.steps[currentStepIndex.value + 1] ?? null)

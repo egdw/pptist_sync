@@ -40,6 +40,7 @@ import {
 import { SecondaryShowFlowClient } from '@/show-flow/secondaryClient'
 import { resolveShowFlowWsUrl } from '@/show-flow/websocket/client'
 import { useShowFlowStore } from '@/show-flow/store'
+import { captureAndUploadHalf } from '@/show-flow/monitor'
 import type { ShowFlowMessage } from '@/show-flow/websocket/protocol'
 
 import BaseView from '@/views/Screen/BaseView.vue'
@@ -126,6 +127,9 @@ const navigate = async (pageId: string) => {
   slidesStore.updateSlideIndex(index)
   await nextTick()
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+  // 双 PPT 合成监控：副屏页变化(含首次)自动截图上传，与主屏合成 1280×800
+  const el = document.querySelector('.screen-slide-list .slide-item.current .slide-content')
+  if (el) void captureAndUploadHalf('secondary', el, index + 1, slidesStore.slides.length)
 }
 
 let client: SecondaryShowFlowClient | null = null

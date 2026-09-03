@@ -11,8 +11,35 @@
     sessionId: null,
     executed: [],      // 最近执行过的 commandId（幂等去重）
     pendingCommandId: null,
-    idToIndex: null    // pageId -> deck index
+    idToIndex: null,   // pageId -> deck index
+    sessionActive: false, // 收到过联动指令：作为正式副屏参与联动放映
+    retryDelay: 2000
   };
+
+  /* ---- 双 PPT 合成监控：联动会话中页变化后截图上传（与主屏合成 1280×800） ---- */
+  var captureTimer = null;
+  function scheduleCapture() {
+    if (!state.sessionActive) return;
+    clearTimeout(captureTimer);
+    captureTimer = setTimeout(postCapture, 250);
+  }
+  function postCapture() {
+    if (!state.sessionActive || !state.ws || state.ws.readyState !== 1) return;
+    try {
+      var slide = deck && deck.getCurrentSlide ? deck.getCurrentSlide() : null;
+      if (!slide) return;
+      var total = deck.getTotalSlides ? deck.getTotalSlides() : 0;
+      var page = (deck.getState ? deck.getState().indexh : 0) + 1;
+      if (typeof htmlToImage === 'undefined') return;
+      htmlToImage.toPng(slide, { pixelRatio: 1 }).then(function (dataUrl) {
+        return fetch('/monitor-api/screen/secondary', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ page: page, total: total, image: dataUrl })
+        });
+      }).catch(function () {});
+    } catch (e) { /* 截图失败不影响放映 */ }
+  }
 
   /* ---- 与 PPTist 端 manifest.ts 完全一致的 MD 解析（仅用于建立 pageId -> index 映射） ---- */
   function stablePageHash(text) {
@@ -96,6 +123,8 @@
     requestAnimationFrame(function () {
       send({ type: 'ACK', commandId: commandId, pageId: currentRenderedPageId(), rendered: true });
       state.pendingCommandId = null;
+      // 合成监控：联动会话中每次页面渲染完成后上传最新画面
+      scheduleCapture();
     });
   }
 
@@ -137,6 +166,8 @@
   }
 
   function handleCommand(msg) {
+    // 联动指令到达：本页作为正式副屏参与联动放映（合成监控开始上传）
+    state.sessionActive = true;
     // 幂等：同一 commandId 只执行一次
     if (msg.commandId && state.executed.indexOf(msg.commandId) !== -1) {
       send({ type: 'ACK', commandId: msg.commandId, pageId: currentRenderedPageId(), rendered: true });

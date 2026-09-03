@@ -41,6 +41,7 @@ import { fileURLToPath } from 'node:url'
 import { attachShowFlowWs } from './showflow-ws.mjs'
 import { createLedRenderService } from './led/render-service.mjs'
 import { createStudioService } from './studio-service.mjs'
+import { createMonitorService } from './monitor-service.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -60,6 +61,9 @@ const PRESENTATION_LINK_CONFIG_FILE = path.resolve(process.env.PPTIST_PRESENTATI
 const STUDIO_DATA_DIR = path.resolve(process.env.PPTIST_STUDIO_DATA_DIR || path.join(ROOT, 'data/studio'))
 const ledRenderService = createLedRenderService({ cacheDir: LED_CACHE_DIR, portraitDir: LED_PORTRAIT_DIR, publicUrl: PUBLIC_URL })
 const studioService = createStudioService({ rootDir: ROOT, revealDir: REVEAL_DIR, dataDir: STUDIO_DATA_DIR })
+// 双 PPT 合成监控：主屏(左 640×800) + 副屏(右 640×800) → 1280×800，联动放映时自动更新
+const MONITOR_MQTT_TOPIC = process.env.PPTIST_MONITOR_MQTT_TOPIC || 'presentation/led/display'
+const monitorService = createMonitorService({ cacheDir: path.join(ROOT, 'data', 'monitor') })
 let getShowFlowWsStatus = () => ({ totalConnections: 0, checkedAt: Date.now(), roles: {} })
 
 const MIME = {
@@ -474,6 +478,21 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && pathname === '/api/studio/assets/upload') { const data = await readRawBody(req, 20 * 1024 * 1024); sendJson(res, 200, { ok: true, asset: await studioService.saveAsset(decodeURIComponent(req.headers['x-filename'] || ''), data) }); return }
       const assetMatch = pathname.match(/^\/api\/studio\/assets\/([^/]+)$/)
       if (req.method === 'DELETE' && assetMatch) { await studioService.deleteAsset(decodeURIComponent(assetMatch[1])); sendJson(res, 200, { ok: true }); return }
+      // 四岗位头像：列表 / 上传（上传同时写一份到 LED 头像目录，LED 四屏与 reveal 页保持一致）
+      if (req.method === 'GET' && pathname === '/api/studio/portraits') { sendJson(res, 200, { portraits: await studioService.listPortraits() }); return }
+      const studioPortraitMatch = pathname.match(/^\/api\/studio\/portrait\/(manager|platform|twin|hardware)$/)
+      if (studioPortraitMatch && req.method === 'POST') {
+        const role = studioPortraitMatch[1]
+        const data = await readRawBody(req, 8 * 1024 * 1024)
+        const result = await studioService.savePortrait(role, decodeURIComponent(req.headers['x-filename'] || `${role}.png`), data)
+        try {
+          await fsp.mkdir(LED_PORTRAIT_DIR, { recursive: true })
+          await atomicWrite(path.join(LED_PORTRAIT_DIR, `${role}.image`), data)
+        }
+        catch (ledError) { log('LED 头像同步失败（不影响 reveal 页）：', ledError.message) }
+        sendJson(res, 200, { ok: true, ...result })
+        return
+      }
       if (req.method === 'GET' && pathname === '/api/studio/system/status') { const render=ledRenderService.getStatus(); sendJson(res, 200, { studio: await studioService.status(), services: { server: 'running', webSocket: 'running', reveal: 'running', lcdRenderService: 'running' }, websocket: getShowFlowWsStatus(), lcd: { protocol: 'led-display/1.0', acknowledgement: '板端 ACK/心跳尚未配置回传 Topic', roles: ['manager','platform','twin','hardware'].map(role=>({role,online:null,currentRevision:render?.revision||null,imageUrl:render?.screens.find(item=>item.role===role)?.url||null,lastRender:render?.renderedAt||null,lastAck:null,lastHeartbeat:null,rssi:null})) } }); return }
       if (req.method === 'GET' && pathname === '/api/studio/themes') { sendJson(res, 200, { themes: await studioService.listThemes() }); return }
       if (req.method === 'GET' && pathname === '/api/studio/themes/current/download') { const exported=await studioService.exportTheme(url.searchParams.get('scope')||'active'); res.writeHead(200,{'Content-Type':'application/zip','Content-Disposition':`attachment; filename="${exported.filename}"`,'Content-Length':exported.data.length,'Cache-Control':'no-store'});res.end(exported.data);return }
@@ -572,6 +591,47 @@ const server = http.createServer(async (req, res) => {
       return
     }
     const portraitMatch = pathname.match(/^\/led-render-api\/portrait\/(manager|platform|twin|hardware)$/)
+    if (portraitMatch && req.method === 'GET') {
+      // 读取当前 LED 头像（文件无扩展名，按魔数识别类型；未设置时 404）
+      const role = portraitMatch[1]
+      const file = path.join(LED_PORTRAIT_DIR, `${role}.image`)
+      const data = await fsp.readFile(file).catch(() => null)
+      if (!data) { sendJson(res, 404, { error: '该岗位尚未设置 LCD 头像' }); return }
+      const head = data.subarray(0, 12).toString('latin1')
+      const type = head.startsWith('GIF89a') || head.startsWith('GIF87a') ? 'image/gif'
+        : head.startsWith('\x89PNG') ? 'image/png'
+        : head.startsWith('\xFF\xD8\xFF') ? 'image/jpeg'
+        : head.startsWith('RIFF') && head.includes('WEBP') ? 'image/webp'
+        : 'application/octet-stream'
+      res.writeHead(200, { 'Content-Type': type, 'Content-Length': data.length, 'Cache-Control': 'no-store' })
+      res.end(data)
+      return
+    }
+    // 双 PPT 合成监控：半区上传 + 最新合成图 HTTP 下载
+    if (pathname.startsWith('/monitor-api/')) {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      const monitorRoleMatch = pathname.match(/^\/monitor-api\/screen\/(main|secondary)$/)
+      if (monitorRoleMatch && req.method === 'POST') {
+        const body = JSON.parse((await readRawBody(req, 8 * 1024 * 1024)).toString('utf8') || '{}')
+        const status = await monitorService.applyHalf(monitorRoleMatch[1], body)
+        sendJson(res, 200, {
+          ok: true, revision: status.revision, url: '/monitor-api/display',
+          mqttTopic: MONITOR_MQTT_TOPIC, width: status.width, height: status.height,
+          sha256: status.sha256, mainPage: status.mainPage, secondaryPage: status.secondaryPage,
+        })
+        return
+      }
+      if (pathname === '/monitor-api/display' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const jpeg = monitorService.displayJpeg()
+        if (!jpeg) { sendJson(res, 404, { error: '尚无合成画面（等待联动放映）' }); return }
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': jpeg.length, 'Cache-Control': 'no-store' })
+        res.end(jpeg)
+        return
+      }
+      if (pathname === '/monitor-api/status' && req.method === 'GET') { sendJson(res, 200, monitorService.status()); return }
+      sendJson(res, 404, { error: '未知接口' })
+      return
+    }
     if (portraitMatch && req.method === 'POST') {
       const chunks = []; let size = 0
       for await (const chunk of req) {
@@ -682,6 +742,17 @@ const server = http.createServer(async (req, res) => {
         const { markdown } = await studioService.getSlides('active')
         res.writeHead(200, { 'Content-Type': MIME['.md'], 'Cache-Control': 'no-store' }); res.end(markdown); return
       }
+      // 四岗位头像按角色回退解析：引用固定为 {role}.png，实际文件扩展名可不同
+      // （Studio 上传 GIF 后引用无需改动，浏览器 img 原生播放动图）
+      const revealPortraitMatch = pathname.match(/^\/reveal\/portraits\/(manager|platform|twin|hardware)\.png$/)
+      if (revealPortraitMatch && req.method === 'GET') {
+        const role = revealPortraitMatch[1]
+        const dir = path.join(REVEAL_DIR, 'portraits')
+        const names = await fsp.readdir(dir).catch(() => [])
+        const hit = names.find(n => n.startsWith(role + '.') && ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(path.extname(n).toLowerCase()))
+        await serveStatic(req, res, '/' + (hit || role + '.png'), dir)
+        return
+      }
       if (pathname === '/reveal/theme.css') {
         const meta = await studioService.status()
         if (meta.activeRevealTheme && meta.activeRevealTheme !== 'default') { await serveStatic(req, res, '/theme.css', path.join(studioService.themesDir, meta.activeRevealTheme)); return }
@@ -722,7 +793,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init()])
+await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init(), monitorService.init()])
 await Promise.all([mainDocStore.loadCurrent(), secondaryDocStore.loadCurrent()])
 const showFlowWs = attachShowFlowWs(server, log)
 getShowFlowWsStatus = showFlowWs.getStatus

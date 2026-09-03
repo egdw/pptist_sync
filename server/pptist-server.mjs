@@ -41,6 +41,7 @@ import { fileURLToPath } from 'node:url'
 import { attachShowFlowWs } from './showflow-ws.mjs'
 import { createLedRenderService } from './led/render-service.mjs'
 import { createStudioService } from './studio-service.mjs'
+import { createMonitorService } from './monitor-service.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -60,6 +61,9 @@ const PRESENTATION_LINK_CONFIG_FILE = path.resolve(process.env.PPTIST_PRESENTATI
 const STUDIO_DATA_DIR = path.resolve(process.env.PPTIST_STUDIO_DATA_DIR || path.join(ROOT, 'data/studio'))
 const ledRenderService = createLedRenderService({ cacheDir: LED_CACHE_DIR, portraitDir: LED_PORTRAIT_DIR, publicUrl: PUBLIC_URL })
 const studioService = createStudioService({ rootDir: ROOT, revealDir: REVEAL_DIR, dataDir: STUDIO_DATA_DIR })
+// 双 PPT 合成监控：主屏(左 640×800) + 副屏(右 640×800) → 1280×800，联动放映时自动更新
+const MONITOR_MQTT_TOPIC = process.env.PPTIST_MONITOR_MQTT_TOPIC || 'presentation/led/display'
+const monitorService = createMonitorService({ cacheDir: path.join(ROOT, 'data', 'monitor') })
 let getShowFlowWsStatus = () => ({ totalConnections: 0, checkedAt: Date.now(), roles: {} })
 
 const MIME = {
@@ -603,6 +607,31 @@ const server = http.createServer(async (req, res) => {
       res.end(data)
       return
     }
+    // 双 PPT 合成监控：半区上传 + 最新合成图 HTTP 下载
+    if (pathname.startsWith('/monitor-api/')) {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      const monitorRoleMatch = pathname.match(/^\/monitor-api\/screen\/(main|secondary)$/)
+      if (monitorRoleMatch && req.method === 'POST') {
+        const body = JSON.parse((await readRawBody(req, 8 * 1024 * 1024)).toString('utf8') || '{}')
+        const status = await monitorService.applyHalf(monitorRoleMatch[1], body)
+        sendJson(res, 200, {
+          ok: true, revision: status.revision, url: '/monitor-api/display',
+          mqttTopic: MONITOR_MQTT_TOPIC, width: status.width, height: status.height,
+          sha256: status.sha256, mainPage: status.mainPage, secondaryPage: status.secondaryPage,
+        })
+        return
+      }
+      if (pathname === '/monitor-api/display' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const jpeg = monitorService.displayJpeg()
+        if (!jpeg) { sendJson(res, 404, { error: '尚无合成画面（等待联动放映）' }); return }
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': jpeg.length, 'Cache-Control': 'no-store' })
+        res.end(jpeg)
+        return
+      }
+      if (pathname === '/monitor-api/status' && req.method === 'GET') { sendJson(res, 200, monitorService.status()); return }
+      sendJson(res, 404, { error: '未知接口' })
+      return
+    }
     if (portraitMatch && req.method === 'POST') {
       const chunks = []; let size = 0
       for await (const chunk of req) {
@@ -764,7 +793,7 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init()])
+await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init(), monitorService.init()])
 await Promise.all([mainDocStore.loadCurrent(), secondaryDocStore.loadCurrent()])
 const showFlowWs = attachShowFlowWs(server, log)
 getShowFlowWsStatus = showFlowWs.getStatus
