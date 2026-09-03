@@ -45,6 +45,7 @@ class Client {
   constructor(name) {
     this.name = name
     this.messages = []
+    this.consumed = new Set()
     this.ws = new WebSocket(URL)
     this.opened = new Promise(resolve => this.ws.on('open', resolve))
     this.ws.on('message', raw => {
@@ -53,12 +54,15 @@ class Client {
     })
   }
   send(msg) { this.ws.send(JSON.stringify(msg)) }
+  /** 扫描全部历史中未消费过的消息（消息可能在断言开始前就已到达），找到即标记消费 */
   async next(pred, timeout = 2000) {
     const start = Date.now()
-    let idx = this.messages.length
     while (Date.now() - start < timeout) {
-      const found = this.messages.slice(idx).find(pred)
-      if (found) return found
+      const found = this.messages.find(m => !this.consumed.has(m) && pred(m))
+      if (found) {
+        this.consumed.add(found)
+        return found
+      }
       await wait(30)
     }
     return null
@@ -146,7 +150,21 @@ const main = async () => {
   const anonErr = await anon.next(m => m.type === 'ERROR' && m.code === 'NOT_REGISTERED')
   ok(!!anonErr, '未注册客户端发送业务消息被拒 (NOT_REGISTERED)')
 
-  controller.close()
+  // 11. force 接管：第二个 controller 携带 force=true，旧 controller 被替换
+  const controller3 = new Client('controller-3')
+  await controller3.opened
+  controller3.send({ type: 'HELLO', role: 'controller', force: true })
+  const c3Ack = await controller3.next(m => m.type === 'HELLO_ACK')
+  ok(c3Ack?.role === 'controller', 'force HELLO 接管 controller 成功')
+  const replaced = await controller.next(m => m.type === 'ERROR' && m.code === 'CONTROLLER_REPLACED', 3000)
+  ok(replaced?.code === 'CONTROLLER_REPLACED', '旧 controller 收到 CONTROLLER_REPLACED 通知')
+
+  // 12. 被替换后旧 controller 的连接已关闭
+  await wait(300)
+  const oldClosed = controller.ws.readyState > 1 // 1=OPEN
+  ok(oldClosed, '旧 controller 连接已被服务端关闭')
+
+  controller3.close()
   secondary2.close()
   anon.close()
   await wait(200)

@@ -34,6 +34,8 @@ export interface ShowFlowMessage {
   state?: StepTargetSnapshot
   code?: string
   message?: string
+  /** HELLO 时声明：强制接管单实例角色（controller/main），服务端会替换占用中的旧连接 */
+  force?: boolean
   /** 客户端自定义：HELLO 时声明屏幕名称等 */
   meta?: Record<string, unknown>
 }

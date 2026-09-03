@@ -35,18 +35,28 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   // ---------- 持久化状态 ----------
   const persisted = loadShowFlowState()
   const sources = ref<ContentSource[]>(persisted.sources)
-  const flow = ref<ShowFlow>(persisted.flow)
-  const unmappedPool = ref<Record<string, string[]>>(persisted.unmappedPool || {})
+  /** 多方案：全部已保存方案；flow 为当前激活方案（计算属性，编辑即写入对应方案） */
+  const flowList = ref<ShowFlow[]>(persisted.flows?.length ? persisted.flows : [persisted.flow])
+  const activeFlowId = ref<string>(persisted.activeFlowId || flowList.value[0].id)
+  const flow = computed<ShowFlow>(() => flowList.value.find(f => f.id === activeFlowId.value) ?? flowList.value[0])
+  /** 未编排池跟随方案保存（多方案互不干扰） */
+  const poolOf = (role: 'main' | 'secondary'): string[] => {
+    const f = flow.value as ShowFlow
+    if (!f.unmappedPool) f.unmappedPool = {}
+    if (!Array.isArray(f.unmappedPool[role])) f.unmappedPool[role] = []
+    return f.unmappedPool[role]
+  }
 
   const mainSource = computed(() => sources.value.find(s => s.role === 'main'))
   const secondarySource = computed(() => sources.value.find(s => s.role === 'secondary'))
 
   const save = () => {
     saveShowFlowState({
-      version: 1,
+      version: 2,
       sources: sources.value,
       flow: flow.value,
-      unmappedPool: unmappedPool.value,
+      flows: flowList.value,
+      activeFlowId: activeFlowId.value,
     })
   }
 
@@ -75,6 +85,8 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const currentStepIndex = ref(-1)
   const online = ref<OnlineStatus>({ main: false, secondary: false, mqtt: false, tablets: [false, false, false, false] })
   const wsConnected = ref(false)
+  /** controller 角色被其他存活窗口占用（区别于服务端不可达） */
+  const roleTaken = ref(false)
   const lastReport = ref<ReconciliationReport | null>(null)
 
   const createController = () => {
@@ -168,9 +180,9 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     if (!manifest.length && role === 'secondary') return
     const sourceLabel = role === 'main' ? '主屏' : '副屏'
     const poolKey = role
-    const result = reconcileSteps(manifest, flow.value.steps, unmappedPool.value[poolKey] || [], sourceLabel)
+    const result = reconcileSteps(manifest, flow.value.steps, poolOf(poolKey as 'main' | 'secondary'), sourceLabel)
     flow.value.steps = result.steps
-    unmappedPool.value[poolKey] = result.unmapped
+    poolOf(poolKey as 'main' | 'secondary').splice(0, poolOf(poolKey as 'main' | 'secondary').length, ...result.unmapped)
     lastReport.value = result.report
     if (result.report.messages.length || result.report.added || result.report.removedNodeRefs) {
       message.info(`${sourceLabel}源同步完成：保留 ${result.report.kept} · 新增 ${result.report.added} · 移除引用 ${result.report.removedNodeRefs}`, { duration: 3000 })
@@ -190,6 +202,53 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   })
   // 页面内容修改：仅刷新展示信息（标题），不动 Steps
   watch(() => slidesStore.slides, refreshMainManifest, { deep: false })
+
+  // ---------- 方案管理（多方案保存/切换） ----------
+  const schemeOptions = computed(() =>
+    flowList.value.map((f, i) => ({ label: `${i + 1}. ${f.name}（${f.steps.length} 步）`, value: f.id })),
+  )
+
+  /** 切换方案：停止当前放映会话，编辑目标指向新方案（未编排池跟随方案） */
+  const switchScheme = (id: string) => {
+    if (id === activeFlowId.value || !flowList.value.some(f => f.id === id)) return
+    activeFlowId.value = id
+    controller?.stop()
+    save()
+    message.success(`已切换到方案「${flow.value.name}」`, { duration: 2000 })
+  }
+
+  /** 另存为新方案：深拷贝当前方案（含步骤），重命名后追加并切换过去 */
+  const saveAsNewScheme = (name?: string) => {
+    const copy: ShowFlow = JSON.parse(JSON.stringify(flow.value))
+    copy.id = `flow-${Math.random().toString(36).slice(2, 10)}`
+    copy.name = (name || '').trim() || `${flow.value.name} 副本`
+    copy.enabled = false
+    copy.currentStepId = undefined
+    flowList.value.push(copy)
+    activeFlowId.value = copy.id
+    controller?.stop()
+    save()
+    message.success(`已保存为新方案「${copy.name}」`, { duration: 2000 })
+  }
+
+  /** 删除当前方案（至少保留一个；仅有一个时清空步骤而非删除） */
+  const deleteScheme = () => {
+    if (flowList.value.length <= 1) {
+      flow.value.steps = []
+      flow.value.currentStepId = undefined
+      controller?.stop()
+      save()
+      message.info('最后一个方案不可删除，已清空其步骤', { duration: 2500 })
+      return
+    }
+    const name = flow.value.name
+    const idx = flowList.value.findIndex(f => f.id === activeFlowId.value)
+    flowList.value.splice(idx, 1)
+    activeFlowId.value = flowList.value[Math.max(0, idx - 1)].id
+    controller?.stop()
+    save()
+    message.success(`已删除方案「${name}」`, { duration: 2000 })
+  }
 
   // ---------- 联动开关 ----------
   const initialized = { value: false }
@@ -214,12 +273,16 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     let roleTakenNotified = false
     wsClient = new ShowFlowWsClient(resolveShowFlowWsUrl(), {
       onMessage: msg => {
-        if (msg.type === 'HELLO_ACK') wsConnected.value = true
+        if (msg.type === 'HELLO_ACK') {
+          wsConnected.value = true
+          roleTaken.value = false
+        }
         if (msg.type === 'ERROR' && msg.code === 'ROLE_TAKEN') {
-          // 本页被拒绝为 controller：另一窗口的控制台仍在线（僵尸连接会被服务端探测后接管）
+          // 本页被拒绝为 controller：另一窗口的控制台仍在线（可点「接管控制台」强制夺取）
+          roleTaken.value = true
           if (!roleTakenNotified) {
             roleTakenNotified = true
-            message.warning('已有控制台在其他窗口运行，本页暂不取得控制权', { duration: 3000 })
+            message.warning('已有控制台在其他窗口运行，可点「接管控制台」夺取', { duration: 3000 })
           }
           return
         }
@@ -263,6 +326,13 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const forceCompleteStep = () => controller?.forceComplete()
   const skipSecondaryScreen = () => controller?.skipSecondary()
 
+  /** 强制接管 controller 角色（服务端会替换占用中的旧控制台） */
+  const takeoverController = () => {
+    roleTaken.value = false
+    wsClient?.takeover()
+    message.info('正在接管控制台 ...', { duration: 1500 })
+  }
+
   // ---------- Step 编辑操作 ----------
   const makeTarget = (role: 'main' | 'secondary', pageId: string) => ({
     action: 'goto' as const,
@@ -283,14 +353,14 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const addPageToStep = (role: 'main' | 'secondary', pageId: string, stepIndex?: number) => {
     const target = makeTarget(role, pageId)
     // 从未编排池移除
-    const pool = unmappedPool.value[role] || []
-    unmappedPool.value[role] = pool.filter(id => id !== pageId)
+    const pool = [...poolOf(role)]
+    poolOf(role).splice(0, poolOf(role).length, ...pool.filter(id => id !== pageId))
     if (stepIndex !== undefined && flow.value.steps[stepIndex]) {
       const step = flow.value.steps[stepIndex]
       const oldPageId = role === 'main' ? step.main?.pageId : step.secondary?.pageId
       // 替换引用时旧页面回到未编排池
       if (oldPageId && oldPageId !== pageId) {
-        unmappedPool.value[role] = [...(unmappedPool.value[role] || []), oldPageId]
+        poolOf(role).push(oldPageId)
       }
       if (role === 'main') step.main = target
       else step.secondary = target
@@ -304,8 +374,8 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   /** 在指定位置插入一个新 Step（拖拽到两个 Step 之间的落点） */
   const insertStepAt = (role: 'main' | 'secondary', pageId: string, atIndex: number) => {
     const target = makeTarget(role, pageId)
-    const pool = unmappedPool.value[role] || []
-    unmappedPool.value[role] = pool.filter(id => id !== pageId)
+    const pool = [...poolOf(role)]
+    poolOf(role).splice(0, poolOf(role).length, ...pool.filter(id => id !== pageId))
     const step: ShowStep = {
       id: `step-${Math.random().toString(36).slice(2, 10)}`,
       order: 0,
@@ -324,7 +394,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     if (role === 'main') step.main = { action: 'keep' }
     else step.secondary = { action: 'keep' }
     if (pageId) {
-      unmappedPool.value[role] = [...(unmappedPool.value[role] || []), pageId]
+      poolOf(role).push(pageId)
     }
     normalizeSteps()
     save()
@@ -349,7 +419,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     // 被移除 Step 引用的页面回到未编排池
     for (const role of ['main', 'secondary'] as const) {
       const pageId = role === 'main' ? step.main?.pageId : step.secondary?.pageId
-      if (pageId) unmappedPool.value[role] = [...(unmappedPool.value[role] || []), pageId]
+      if (pageId) poolOf(role).push(pageId)
     }
     flow.value.steps.splice(idx, 1)
     flow.value.steps.forEach((s, i) => { s.order = i + 1 })
@@ -404,7 +474,14 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   return {
     sources,
     flow,
-    unmappedPool,
+    flowList,
+    activeFlowId,
+    schemeOptions,
+    switchScheme,
+    saveAsNewScheme,
+    deleteScheme,
+    roleTaken,
+    takeoverController,
     mainSource,
     secondarySource,
     mainManifest,

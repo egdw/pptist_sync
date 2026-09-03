@@ -21,6 +21,8 @@ export class ShowFlowWsClient {
   private closed = false
   /** 重连退避：2s 起指数递增，上限 30s；连接成功后复位。避免被拒角色/服务端离线时的重连风暴 */
   private reconnectDelay = 2000
+  /** 下次 HELLO 携带 force 标记（「接管控制台」按钮） */
+  private forceNextHello = false
 
   /** 各远端角色最近心跳时间（ms 时间戳） */
   lastSeenByRole = new Map<ShowFlowRole, number>()
@@ -29,6 +31,21 @@ export class ShowFlowWsClient {
     private url: string,
     private handlers: { onMessage: MessageHandler; onDisconnect: () => void },
   ) {}
+
+  /** 强制接管 controller 角色：立即重连并携带 force HELLO（服务端替换占用中的旧控制台） */
+  takeover() {
+    this.forceNextHello = true
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = 0
+    }
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.send({ type: 'HELLO', role: 'controller', force: true })
+      this.forceNextHello = false
+      return
+    }
+    this.connect()
+  }
 
   connect() {
     this.closed = false
@@ -41,7 +58,9 @@ export class ShowFlowWsClient {
     }
     this.ws.onopen = () => {
       this.reconnectDelay = 2000
-      this.send({ type: 'HELLO', role: 'controller' })
+      const force = this.forceNextHello
+      this.forceNextHello = false
+      this.send({ type: 'HELLO', role: 'controller', ...(force ? { force: true } : {}) })
       this.startHeartbeat()
     }
     this.ws.onmessage = event => {

@@ -2,11 +2,33 @@
   <div class="show-flow-editor">
     <header class="header">
       <div class="left">
+        <Select
+          class="scheme-select"
+          :value="activeFlowId"
+          :options="schemeOptions"
+          @update:value="(v: string | number) => showFlowStore.switchScheme(String(v))"
+        />
+        <template v-if="saveAsVisible">
+          <Input
+            class="save-as-input"
+            :value="saveAsName"
+            @update:value="(v: string) => (saveAsName = v)"
+            placeholder="新方案名称"
+            @keydown.enter="confirmSaveAs()"
+          />
+          <Button size="small" type="primary" @click="confirmSaveAs()">保存</Button>
+          <Button size="small" @click="closeSaveAs()">取消</Button>
+        </template>
+        <template v-else>
+          <Button size="small" @click="openSaveAs()">另存为</Button>
+          <Button size="small" :class="{ 'confirm-arm': deleteArmed }" @click="deleteSchemeClick()">{{ deleteArmed ? '确认删除？' : '删除方案' }}</Button>
+        </template>
+        <Divider :margin="10" />
         <Input
           class="flow-name"
           :value="flow.name"
           @update:value="(v: string) => updateFlowMeta({ name: v })"
-          placeholder="流程名称"
+          placeholder="方案名称"
         />
         <div class="switch-item">
           <Switch :value="flow.enabled" @update:value="v => showFlowStore.setEnabled(v)" />
@@ -27,7 +49,12 @@
         />
       </div>
       <div class="right">
-        <span class="ws-status" :class="{ online: wsConnected }">{{ wsConnected ? '控制服务已连接' : '控制服务未连接' }}</span>
+        <template v-if="roleTaken">
+          <span class="ws-status warn">控制台在其他窗口</span>
+          <Button size="small" type="primary" @click="showFlowStore.takeoverController()">接管控制台</Button>
+        </template>
+        <span v-else-if="!wsConnected" class="ws-status">控制服务未连接</span>
+        <span v-else class="ws-status online">控制服务已连接</span>
         <Button size="small" @click="openSecondaryScreen">打开副屏页</Button>
         <Button size="small" @click="refreshSecondary">刷新副屏清单</Button>
         <Button size="small" type="primary" @click="enterScreeningWithFlow">开始联动放映</Button>
@@ -202,7 +229,7 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useShowFlowStore } from '@/show-flow/store'
 import { useSlidesStore } from '@/store'
@@ -217,8 +244,35 @@ import ThumbnailSlide from '@/views/components/ThumbnailSlide/index.vue'
 
 const showFlowStore = useShowFlowStore()
 const slidesStore = useSlidesStore()
-const { flow, sources, mainManifest, secondaryManifest, secondaryManifestError, secondarySlides, snapshot, wsConnected, lastReport } = storeToRefs(showFlowStore)
+const { flow, flowList, activeFlowId, schemeOptions, roleTaken, sources, mainManifest, secondaryManifest, secondaryManifestError, secondarySlides, snapshot, wsConnected, lastReport } = storeToRefs(showFlowStore)
 const { slides: mainSlides } = storeToRefs(slidesStore)
+
+/** 另存为新方案（内嵌输入框，避免 prompt 在内嵌浏览器中不可用） */
+const saveAsVisible = ref(false)
+const saveAsName = ref('')
+const openSaveAs = () => {
+  saveAsName.value = flow.value.name + ' 副本'
+  saveAsVisible.value = true
+}
+const closeSaveAs = () => { saveAsVisible.value = false }
+const confirmSaveAs = () => {
+  showFlowStore.saveAsNewScheme(saveAsName.value)
+  saveAsVisible.value = false
+}
+
+/** 删除方案：两次点击确认（避免 confirm 在内嵌浏览器中不可用） */
+const deleteArmed = ref(false)
+let deleteArmTimer = 0
+const deleteSchemeClick = () => {
+  if (!deleteArmed.value) {
+    deleteArmed.value = true
+    if (deleteArmTimer) clearTimeout(deleteArmTimer)
+    deleteArmTimer = window.setTimeout(() => (deleteArmed.value = false), 3000)
+    return
+  }
+  deleteArmed.value = false
+  showFlowStore.deleteScheme()
+}
 
 // 副屏内容源类型：PPTist 文稿渲染真实缩略图，Reveal/Markdown 渲染 H1 文本卡
 const isMdPool = computed(() => secondarySource.value?.kind !== 'pptist-remote')
@@ -395,7 +449,20 @@ onMounted(() => {
   .ws-status {
     font-size: 12px;
     color: #999;
+    white-space: nowrap;
     &.online { color: #19b26b; }
+    &.warn { color: #e6a23c; }
+  }
+  .scheme-select {
+    width: 210px;
+    flex-shrink: 0;
+  }
+  .save-as-input {
+    width: 160px;
+  }
+  .confirm-arm {
+    border-color: #d25f5f !important;
+    color: #d25f5f !important;
   }
 }
 

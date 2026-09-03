@@ -80,13 +80,19 @@ export interface ShowFlow {
   /** 当前编辑光标（最近一次执行到的 Step），仅编辑/控制台状态，非持久强制项 */
   currentStepId?: string
   steps: ShowStep[]
+  /** 未编排页面池（按角色分组），跟随方案保存 */
+  unmappedPool?: Record<string, string[]>
 }
 
-/** 持久化整体结构 */
+/** 持久化整体结构（v2 起支持多方案：flows + activeFlowId；flow 字段保留为当前方案镜像，便于回滚兼容） */
 export interface ShowFlowPersistence {
-  version: 1
+  version: 1 | 2
   sources: ContentSource[]
   flow: ShowFlow
+  /** v2：全部已保存方案 */
+  flows?: ShowFlow[]
+  /** v2：当前激活方案 id */
+  activeFlowId?: string
   /** 已编排但从未出现在任何 Step 里的提示信息：未编排页面池按 sourceId 分组 */
   unmappedPool?: Record<string, string[]>
 }

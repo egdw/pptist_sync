@@ -83,16 +83,22 @@ export function attachShowFlowWs(server, log = () => {}) {
         if (SINGLE_INSTANCE_ROLES.has(role)) {
           const existing = byRole(role)[0]
           if (existing && existing !== ws) {
-            // 旧连接仍存活：拒绝（一个会话只允许一个）；旧连接已死（如关页后残留）：探测确认后踢掉接管
-            const alive = await probeAlive(existing)
+            // force=true：用户显式点击「接管控制台」，直接替换占用中的旧控制台；
+            // 否则仅当旧连接为僵尸（协议 ping 1s 无 pong）时接管，存活则拒绝
+            const alive = msg.force === true ? false : await probeAlive(existing)
             if (alive) {
               send(ws, { type: 'ERROR', code: 'ROLE_TAKEN', message: `${role} 角色已由其他窗口占用` })
               ws.close()
               return
             }
-            log(`[showflow-ws] 检测到僵尸 ${role} 连接，由新连接接管`)
+            log(`[showflow-ws] ${msg.force === true ? '新控制台强制接管' : '检测到僵尸连接，自动接管'}（${role}）`)
             clients.delete(existing)
-            try { existing.terminate() } catch { /* 已死 */ }
+            // 先发通知再关闭：terminate 会立即销毁 socket，排队的 ERROR 帧发不出去
+            send(existing, { type: 'ERROR', code: 'CONTROLLER_REPLACED', message: '控制台已被其他窗口接管' })
+            existing.close(1000, 'replaced')
+            setTimeout(() => {
+              try { existing.terminate() } catch { /* 已死 */ }
+            }, 500).unref()
           }
         }
         clients.set(ws, { role, meta: msg.meta || {} })

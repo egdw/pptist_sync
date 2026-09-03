@@ -407,6 +407,8 @@ async function serveStatic(req, res, pathname, baseDir = DIST_DIR) {
   res.writeHead(200, {
     'Content-Type': MIME[ext] || 'application/octet-stream',
     'Content-Length': stat.size,
+    // HTML 壳禁止缓存：否则发新版后浏览器仍引用旧 hash 资源，表现为"改了代码不生效"
+    ...(ext === '.html' ? { 'Cache-Control': 'no-cache' } : {}),
   })
   fs.createReadStream(filePath).pipe(res)
 }
