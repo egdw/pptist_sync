@@ -587,6 +587,22 @@ const server = http.createServer(async (req, res) => {
       return
     }
     const portraitMatch = pathname.match(/^\/led-render-api\/portrait\/(manager|platform|twin|hardware)$/)
+    if (portraitMatch && req.method === 'GET') {
+      // 读取当前 LED 头像（文件无扩展名，按魔数识别类型；未设置时 404）
+      const role = portraitMatch[1]
+      const file = path.join(LED_PORTRAIT_DIR, `${role}.image`)
+      const data = await fsp.readFile(file).catch(() => null)
+      if (!data) { sendJson(res, 404, { error: '该岗位尚未设置 LCD 头像' }); return }
+      const head = data.subarray(0, 12).toString('latin1')
+      const type = head.startsWith('GIF89a') || head.startsWith('GIF87a') ? 'image/gif'
+        : head.startsWith('\x89PNG') ? 'image/png'
+        : head.startsWith('\xFF\xD8\xFF') ? 'image/jpeg'
+        : head.startsWith('RIFF') && head.includes('WEBP') ? 'image/webp'
+        : 'application/octet-stream'
+      res.writeHead(200, { 'Content-Type': type, 'Content-Length': data.length, 'Cache-Control': 'no-store' })
+      res.end(data)
+      return
+    }
     if (portraitMatch && req.method === 'POST') {
       const chunks = []; let size = 0
       for await (const chunk of req) {
