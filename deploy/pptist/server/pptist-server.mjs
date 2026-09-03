@@ -39,6 +39,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { attachShowFlowWs } from './showflow-ws.mjs'
+import { createLedRenderService } from './led/render-service.mjs'
+import { createStudioService } from './studio-service.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -51,6 +53,14 @@ const REVEAL_DIR = path.resolve(process.env.PPTIST_REVEAL_DIR || path.join(ROOT,
 const PUBLIC_URL = (process.env.PPTIST_PUBLIC_URL || '').replace(/\/+$/, '')
 const MAX_UPLOAD_MB = Math.max(1, Number(process.env.PPTIST_MAX_UPLOAD_MB || 1024))
 const REMOTE_API = process.env.PPTIST_REMOTE_API !== undefined ? process.env.PPTIST_REMOTE_API : 'https://server.pptist.cn'
+const LED_CACHE_DIR = path.resolve(process.env.PPTIST_LED_CACHE_DIR || path.join(ROOT, 'data/led-cache'))
+const LED_PORTRAIT_DIR = path.resolve(process.env.PPTIST_LED_PORTRAIT_DIR || path.join(ROOT, 'data/led-assets/portraits'))
+const SHOWFLOW_STATE_FILE = path.resolve(process.env.PPTIST_SHOWFLOW_STATE_FILE || path.join(ROOT, 'data/showflow/state.json'))
+const PRESENTATION_LINK_CONFIG_FILE = path.resolve(process.env.PPTIST_PRESENTATION_LINK_CONFIG_FILE || path.join(ROOT, 'data/config/presentation-link.json'))
+const STUDIO_DATA_DIR = path.resolve(process.env.PPTIST_STUDIO_DATA_DIR || path.join(ROOT, 'data/studio'))
+const ledRenderService = createLedRenderService({ cacheDir: LED_CACHE_DIR, portraitDir: LED_PORTRAIT_DIR, publicUrl: PUBLIC_URL })
+const studioService = createStudioService({ rootDir: ROOT, revealDir: REVEAL_DIR, dataDir: STUDIO_DATA_DIR })
+let getShowFlowWsStatus = () => ({ totalConnections: 0, checkedAt: Date.now(), roles: {} })
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -440,6 +450,146 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname
 
   try {
+    if (pathname.startsWith('/api/studio/')) {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      const readJson = async () => {
+        const raw = await readRawBody(req, 6 * 1024 * 1024)
+        return JSON.parse(raw.toString('utf8') || '{}')
+      }
+      if (req.method === 'GET' && pathname === '/api/studio/slides') { sendJson(res, 200, await studioService.getSlides('draft')); return }
+      if (req.method === 'GET' && pathname === '/api/studio/slides/active') { sendJson(res, 200, await studioService.getSlides('active')); return }
+      if (req.method === 'GET' && pathname === '/api/studio/slides/draft/raw') {
+        const { markdown } = await studioService.getSlides('draft'); res.writeHead(200, { 'Content-Type': MIME['.md'], 'Cache-Control': 'no-store' }); res.end(markdown); return
+      }
+      // ShowFlow 副屏清单数据源：Studio「发布」后的正式内容（从未编辑时自动播种原始样例）
+      if (req.method === 'GET' && pathname === '/api/studio/slides/active/raw') {
+        const { markdown } = await studioService.getSlides('active'); res.writeHead(200, { 'Content-Type': MIME['.md'], 'Cache-Control': 'no-store' }); res.end(markdown); return
+      }
+      if (req.method === 'PUT' && pathname === '/api/studio/slides') { const body = await readJson(); sendJson(res, 200, { ok: true, status: await studioService.saveDraft(body.markdown) }); return }
+      if (req.method === 'POST' && pathname === '/api/studio/publish') { const body = await readJson(); sendJson(res, 200, { ok: true, status: await studioService.publish(body.message) }); return }
+      if (req.method === 'GET' && pathname === '/api/studio/versions') { sendJson(res, 200, { versions: await studioService.versions() }); return }
+      const restoreMatch = pathname.match(/^\/api\/studio\/versions\/([^/]+)\/restore$/)
+      if (req.method === 'POST' && restoreMatch) { sendJson(res, 200, { ok: true, status: await studioService.restore(decodeURIComponent(restoreMatch[1])) }); return }
+      if (req.method === 'GET' && pathname === '/api/studio/assets') { sendJson(res, 200, { assets: await studioService.listAssets() }); return }
+      if (req.method === 'POST' && pathname === '/api/studio/assets/upload') { const data = await readRawBody(req, 20 * 1024 * 1024); sendJson(res, 200, { ok: true, asset: await studioService.saveAsset(decodeURIComponent(req.headers['x-filename'] || ''), data) }); return }
+      const assetMatch = pathname.match(/^\/api\/studio\/assets\/([^/]+)$/)
+      if (req.method === 'DELETE' && assetMatch) { await studioService.deleteAsset(decodeURIComponent(assetMatch[1])); sendJson(res, 200, { ok: true }); return }
+      if (req.method === 'GET' && pathname === '/api/studio/system/status') { const render=ledRenderService.getStatus(); sendJson(res, 200, { studio: await studioService.status(), services: { server: 'running', webSocket: 'running', reveal: 'running', lcdRenderService: 'running' }, websocket: getShowFlowWsStatus(), lcd: { protocol: 'led-display/1.0', acknowledgement: '板端 ACK/心跳尚未配置回传 Topic', roles: ['manager','platform','twin','hardware'].map(role=>({role,online:null,currentRevision:render?.revision||null,imageUrl:render?.screens.find(item=>item.role===role)?.url||null,lastRender:render?.renderedAt||null,lastAck:null,lastHeartbeat:null,rssi:null})) } }); return }
+      if (req.method === 'GET' && pathname === '/api/studio/themes') { sendJson(res, 200, { themes: await studioService.listThemes() }); return }
+      if (req.method === 'GET' && pathname === '/api/studio/themes/current/download') { const exported=await studioService.exportTheme(url.searchParams.get('scope')||'active'); res.writeHead(200,{'Content-Type':'application/zip','Content-Disposition':`attachment; filename="${exported.filename}"`,'Content-Length':exported.data.length,'Cache-Control':'no-store'});res.end(exported.data);return }
+      if (req.method === 'GET' && pathname === '/api/studio/themes/draft/css') { sendJson(res, 200, await studioService.getDraftThemeCss()); return }
+      if (req.method === 'PUT' && pathname === '/api/studio/themes/draft/css') { const body=await readJson(); sendJson(res, 200, {ok:true,...await studioService.saveDraftThemeCss(body.css)}); return }
+      if (req.method === 'POST' && pathname === '/api/studio/themes/upload') { const data = await readRawBody(req, 20 * 1024 * 1024); sendJson(res, 200, { ok: true, theme: await studioService.uploadTheme(decodeURIComponent(req.headers['x-filename'] || ''), data) }); return }
+      const themeSelectMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)\/preview$/)
+      if (req.method === 'POST' && themeSelectMatch) { sendJson(res, 200, { ok: true, status: await studioService.selectDraftTheme(decodeURIComponent(themeSelectMatch[1])) }); return }
+      const themeFileMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)\/files\/(.+)$/)
+      if (req.method === 'GET' && themeFileMatch) { const id = decodeURIComponent(themeFileMatch[1]); if (!/^[a-z0-9._-]+$/i.test(id)) { sendJson(res, 400, { error: '无效主题 ID' }); return } if (id === 'default') { await serveStatic(req, res, '/theme.css', REVEAL_DIR); return } await serveStatic(req, res, `/${themeFileMatch[2]}`, path.join(studioService.themesDir, id)); return }
+      const themeDeleteMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)$/)
+      if (req.method === 'DELETE' && themeDeleteMatch) { await studioService.deleteTheme(decodeURIComponent(themeDeleteMatch[1])); sendJson(res, 200, { ok: true }); return }
+      if (req.method === 'GET' && pathname === '/api/studio/lcd/themes') { sendJson(res,200,{themes:await studioService.listLcdThemes()}); return }
+      if (req.method === 'GET' && pathname === '/api/studio/lcd/themes/draft') { sendJson(res,200,await studioService.draftLcdConfig()); return }
+      if (req.method === 'POST' && pathname === '/api/studio/lcd/themes/upload') { const data=await readRawBody(req,20*1024*1024); sendJson(res,200,{ok:true,theme:await studioService.uploadLcdTheme(decodeURIComponent(req.headers['x-filename']||''),data)}); return }
+      if (req.method === 'PUT' && pathname === '/api/studio/lcd/themes/draft') { const body=await readJson(); sendJson(res,200,{ok:true,...await studioService.saveLcdTheme(body.id,body.config)}); return }
+      const lcdSelectMatch=pathname.match(/^\/api\/studio\/lcd\/themes\/([^/]+)\/preview$/)
+      if(req.method==='POST'&&lcdSelectMatch){sendJson(res,200,{ok:true,...await studioService.selectDraftLcdTheme(decodeURIComponent(lcdSelectMatch[1]))});return}
+      const lcdDeleteMatch=pathname.match(/^\/api\/studio\/lcd\/themes\/([^/]+)$/)
+      if(req.method==='DELETE'&&lcdDeleteMatch){await studioService.deleteLcdTheme(decodeURIComponent(lcdDeleteMatch[1]));sendJson(res,200,{ok:true});return}
+      sendJson(res, 404, { error: '未知 Studio 接口' }); return
+    }
+    if (pathname.startsWith('/studio-assets/')) { await serveStatic(req, res, pathname.replace(/^\/studio-assets/, ''), studioService.assetsDir); return }
+    // Vite 使用相对构建资源；/studio/lcd 等二级 SPA 路由会解析为 /studio/assets/*。
+    if (pathname.startsWith('/studio/assets/')) { await serveStatic(req, res, pathname.replace(/^\/studio/, ''), DIST_DIR); return }
+    if (pathname === '/presentation-link-api/config') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      if (req.method === 'GET') {
+        try { sendJson(res, 200, { exists: true, config: JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8')) }) }
+        catch (error) {
+          if (error.code === 'ENOENT') sendJson(res, 200, { exists: false, config: null })
+          else throw error
+        }
+        return
+      }
+      if (req.method === 'POST') {
+        const chunks = []; let size = 0
+        for await (const chunk of req) { size += chunk.length; if (size > 1024 * 1024) throw new Error('配置数据过大'); chunks.push(chunk) }
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+        if (!body.config?.mqtt || !body.config?.ws) { sendJson(res, 400, { error: '无效的放映联动配置' }); return }
+        await fsp.mkdir(path.dirname(PRESENTATION_LINK_CONFIG_FILE), { recursive: true })
+        await atomicWrite(PRESENTATION_LINK_CONFIG_FILE, JSON.stringify(body.config, null, 2))
+        sendJson(res, 200, { ok: true }); return
+      }
+      sendJson(res, 405, { error: 'Method Not Allowed' }); return
+    }
+
+    if (pathname === '/showflow-api/state') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      // 读写时补齐缺失的角色源：旧版客户端会把缺 secondary 的结构写回来，
+      // 导致其他窗口的副屏池永远为空
+      const sanitizeState = state => {
+        if (!state || !Array.isArray(state.sources)) return state
+        if (!state.sources.some(s => s.role === 'main')) {
+          state.sources.unshift({ id: 'main-pptist', kind: 'pptist', name: '主屏 PPTist（当前文稿）', role: 'main' })
+        }
+        if (!state.sources.some(s => s.role === 'secondary')) {
+          state.sources.push({ id: 'secondary-reveal', kind: 'reveal-md', name: '副屏 Reveal / Markdown', role: 'secondary', mdPath: '/api/studio/slides/active/raw' })
+        }
+        return state
+      }
+      if (req.method === 'GET') {
+        try {
+          const state = sanitizeState(JSON.parse(await fsp.readFile(SHOWFLOW_STATE_FILE, 'utf8')))
+          sendJson(res, 200, { exists: true, state })
+        }
+        catch (error) {
+          if (error.code === 'ENOENT') sendJson(res, 200, { exists: false, state: null })
+          else throw error
+        }
+        return
+      }
+      if (req.method === 'POST') {
+        const chunks = []; let size = 0
+        for await (const chunk of req) { size += chunk.length; if (size > 5 * 1024 * 1024) throw new Error('ShowFlow 方案数据不能超过 5MB'); chunks.push(chunk) }
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+        if (!body.state || !Array.isArray(body.state.sources) || !Array.isArray(body.state.flows)) { sendJson(res, 400, { error: '无效的 ShowFlow 方案数据' }); return }
+        const state = sanitizeState(body.state)
+        await fsp.mkdir(path.dirname(SHOWFLOW_STATE_FILE), { recursive: true })
+        await atomicWrite(SHOWFLOW_STATE_FILE, JSON.stringify(state, null, 2))
+        sendJson(res, 200, { ok: true }); return
+      }
+      sendJson(res, 405, { error: 'Method Not Allowed' }); return
+    }
+    if (req.method === 'POST' && pathname === '/led-render-api/render') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+      if (!body.state || typeof body.state !== 'object') {
+        sendJson(res, 400, { error: 'state 必须是 LcdSceneState' })
+        return
+      }
+      const origin = `${req.socket.encrypted ? 'https' : 'http'}://${req.headers.host || `localhost:${PORT}`}`
+      sendJson(res, 200, await ledRenderService.render(body.state, origin, body.theme || await studioService.activeLcdConfig()))
+      return
+    }
+    const portraitMatch = pathname.match(/^\/led-render-api\/portrait\/(manager|platform|twin|hardware)$/)
+    if (portraitMatch && req.method === 'POST') {
+      const chunks = []; let size = 0
+      for await (const chunk of req) {
+        size += chunk.length
+        if (size > 8 * 1024 * 1024) throw new Error('头像不能超过 8MB')
+        chunks.push(chunk)
+      }
+      const data = Buffer.concat(chunks)
+      if (!data.length) { sendJson(res, 400, { error: '头像文件为空' }); return }
+      await fsp.mkdir(LED_PORTRAIT_DIR, { recursive: true })
+      await atomicWrite(path.join(LED_PORTRAIT_DIR, `${portraitMatch[1]}.image`), data)
+      sendJson(res, 200, { ok: true, role: portraitMatch[1] })
+      return
+    }
+    if (pathname.startsWith('/led/')) {
+      await serveStatic(req, res, pathname.replace(/^\/led/, '') || '/', LED_CACHE_DIR)
+      return
+    }
     // CORS：默认同源部署；如需跨域部署可用环境变量放开（这里对 API 统一允许，静态资源同源）
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -528,6 +678,24 @@ const server = http.createServer(async (req, res) => {
       return
     }
     if (pathname.startsWith('/reveal/')) {
+      if (pathname === '/reveal/slides.md') {
+        const { markdown } = await studioService.getSlides('active')
+        res.writeHead(200, { 'Content-Type': MIME['.md'], 'Cache-Control': 'no-store' }); res.end(markdown); return
+      }
+      if (pathname === '/reveal/theme.css') {
+        const meta = await studioService.status()
+        if (meta.activeRevealTheme && meta.activeRevealTheme !== 'default') { await serveStatic(req, res, '/theme.css', path.join(studioService.themesDir, meta.activeRevealTheme)); return }
+      }
+      const themeAssetExt = path.extname(pathname).toLowerCase()
+      if (['.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.woff', '.woff2'].includes(themeAssetExt)) {
+        const meta = await studioService.status()
+        if (meta.activeRevealTheme && meta.activeRevealTheme !== 'default') {
+          const themeDir = path.join(studioService.themesDir, meta.activeRevealTheme)
+          const relative = pathname.replace(/^\/reveal/, '') || '/'
+          const candidate = path.resolve(themeDir, `.${decodeURIComponent(relative)}`)
+          if (candidate.startsWith(themeDir + path.sep) && (await fsp.stat(candidate).catch(() => null))?.isFile()) { await serveStatic(req, res, relative, themeDir); return }
+        }
+      }
       await serveStatic(req, res, pathname.replace(/^\/reveal/, '') || '/', REVEAL_DIR)
       return
     }
@@ -554,9 +722,10 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs()])
+await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init()])
 await Promise.all([mainDocStore.loadCurrent(), secondaryDocStore.loadCurrent()])
-attachShowFlowWs(server, log)
+const showFlowWs = attachShowFlowWs(server, log)
+getShowFlowWsStatus = showFlowWs.getStatus
 server.listen(PORT, '0.0.0.0', () => {
   log(`服务已启动：http://0.0.0.0:${PORT}（播放页 /play，上传页 /upload，编辑器 /editor，联动编排 /showflow，副屏 Reveal /reveal，副屏 PPTist /secondary）`)
   log(`ShowFlow WebSocket: ws://0.0.0.0:${PORT}/showflow`)

@@ -9,6 +9,13 @@ set -e
 cd "$(dirname "$0")"
 DIR="$(pwd)"
 
+# ---- 0. 升级保护提示：覆盖部署不动任何数据 ----
+if [ -d "data" ] || [ -f "config.env" ]; then
+  echo "[setup] 检测到已有部署：本次为覆盖升级，不会删除任何数据。"
+  echo "        保留内容：主屏/副屏文稿(data/)、Studio 草稿与版本(data/studio/)、"
+  echo "        联动方案(data/showflow/)、MQTT 配置(data/config/)、config.env"
+fi
+
 # ---- 1. 解压包内自带的 Node.js 运行时（无需联网） ----
 NODE_TARBALL=$(ls runtime/node-v*-linux-arm64.tar.xz 2>/dev/null | head -1 || true)
 if [ ! -x "runtime/node/bin/node" ]; then
@@ -107,6 +114,11 @@ if [ "$1" = "--autostart" ]; then
 fi
 
 # ---- 7. 首次部署自检 ----
+echo "[setup] 自检：LED 渲染模块（失败仅影响 LCD 即时渲染，不影响主服务）..."
+if ! "$NODE_CMD" --input-type=module -e "await import('file://${DIR}/server/led/renderer.mjs')" >/dev/null 2>&1; then
+  echo "[setup] 警告：LED 渲染模块加载失败（通常为缺少 @napi-rs/canvas 平台二进制，"
+  echo "        或字体文件缺失）。主服务与放映联动不受影响。"
+fi
 echo "[setup] 自检：启动服务并检查接口 ..."
 if ! "./start-pptist.sh" play; then
   echo ""
