@@ -63,7 +63,7 @@ export function createMonitorService({ cacheDir }) {
         ctx.fillStyle = '#64748b'
         ctx.font = '28px "MonitorUI", sans-serif'
         ctx.textAlign = 'center'
-        ctx.fillText(role === 'main' ? '等待主屏画面' : '等待副屏画面', x + HALF_WIDTH / 2, HEIGHT / 2)
+        ctx.fillText(role === 'main' ? 'WAITING FOR MAIN' : 'WAITING FOR SECONDARY', x + HALF_WIDTH / 2, HEIGHT / 2)
         ctx.textAlign = 'left'
       }
     }
