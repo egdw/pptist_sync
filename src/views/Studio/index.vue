@@ -32,8 +32,26 @@
         <template v-if="mode === 'visual' && current">
           <label>页面标题<input v-model="form.title" @input="applyForm" /></label>
           <label>副标题<textarea v-model="form.subtitle" @input="applyForm"></textarea></label>
-          <label>当前阶段<input v-model="form.stage" @input="applyForm" /></label>
           <label>页面排版（决定页面布局，选择后可继续改内容）<select v-model="form.template" @change="applyForm"><option v-for="t in templates" :key="t.id" :value="t.id">{{ t.name }} · {{ t.desc }}</option></select></label>
+          <div class="avatar-block">
+            <div class="avatar-title">四岗位头像 <small>用于封面团队页 / 角色卡 / LED 屏，支持 GIF 动图</small></div>
+            <div class="avatar-grid">
+              <div v-for="p in portraits" :key="p.role" class="avatar-slot">
+                <img :src="`${p.url}&b=${previewBust}`" :alt="roleNames[p.role as Role]" />
+                <b>{{ roleNames[p.role as Role] }}</b>
+                <label class="avatar-upload">更换<input type="file" accept=".png,.jpg,.jpeg,.gif,.webp" hidden @change="e => uploadPortrait(p.role as Role, e)" /></label>
+              </div>
+            </div>
+          </div>
+          <div class="avatar-block" v-if="pageImages.length">
+            <div class="avatar-title">页面图片 <small>上传替换当前页引用的图片，支持 GIF 动图（自动存入素材库）</small></div>
+            <div v-for="(img, index) in pageImages" :key="index" class="page-image">
+              <img :src="img.url" />
+              <div class="page-image-info"><b>图 {{ index + 1 }}</b><small>{{ img.url }}</small></div>
+              <label class="avatar-upload">替换<input type="file" accept=".png,.jpg,.jpeg,.gif,.webp" hidden @change="e => replacePageImage(index, e)" /></label>
+            </div>
+          </div>
+          <label>当前阶段<input v-model="form.stage" @input="applyForm" /></label>
           <label>主导岗位<select v-model="form.lead" @change="applyForm"><option value="">无</option><option v-for="role in roles" :key="role" :value="role">{{ role }}</option></select></label>
           <fieldset><legend>参与岗位</legend><label v-for="role in roles" :key="role" class="check"><input v-model="form.active" type="checkbox" :value="role" @change="applyForm" />{{ role }}</label></fieldset>
           <label v-for="role in roles" :key="role">{{ role }} 任务<input v-model="form.tasks[role]" @input="applyForm" /></label>
@@ -88,6 +106,7 @@ import type { LcdSceneState } from '@/show-flow/types'
 import { renderLcdState, type LedRenderResult } from '@/show-flow/lcd/render-client'
 import { publishLcdRenderResult } from '@/show-flow/lcd/lcd-controller'
 import { publishPresentationMqtt } from '@/utils/presentation/bridge'
+import message from '@/utils/message'
 import { STUDIO_TEMPLATES } from './templates'
 
 type Role = 'manager' | 'platform' | 'twin' | 'hardware'
@@ -155,6 +174,58 @@ function addFromTemplate(tpl: { id: string; build: (stage: string) => string }) 
   selected.value = insertAt
 }
 function go(id: string) { history.pushState({}, '', `/studio/${id}`); module.value = id; if (id === 'assets') loadAssets(); if (id === 'theme') loadThemes(); if(id==='lcd')loadLcdThemes(); if (id === 'system') loadSystem() }
+
+// ---- 四岗位头像与页面图片替换 ----
+const portraits = ref<any[]>([])
+const previewBust = ref(Date.now())
+async function loadPortraits() {
+  try { portraits.value = (await (await fetch('/api/studio/portraits')).json()).portraits } catch { /* 服务端不可达时保持占位 */ }
+}
+async function uploadPortrait(role: Role, event: Event) {
+  const input = event.target as HTMLInputElement; const file = input.files?.[0]
+  if (!file) return
+  try {
+    const r = await fetch(`/api/studio/portrait/${role}`, { method: 'POST', headers: { 'X-Filename': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' }, body: file })
+    const data = await r.json()
+    if (!r.ok || !data.ok) throw new Error(data.error || `上传失败（${r.status}）`)
+    previewBust.value = Date.now()
+    await loadPortraits()
+    previewKey.value++
+    message.success(`${roleNames[role as Role]}头像已更新（reveal 页与 LED 屏同步）`)
+  } catch (e: any) { message.error(e?.message || '头像上传失败') }
+  input.value = ''
+}
+/** 当前页 markdown 里引用的全部图片（含 GIF），供可视化替换 */
+const pageImages = computed(() => {
+  const text = current.value?.text || ''
+  const out: { url: string; alt: string; index: number }[] = []
+  const re = /!\[([^\]]*)\]\(([^)]+)\)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) out.push({ alt: m[1], url: m[2], index: m.index })
+  return out
+})
+async function replacePageImage(imageIndex: number, event: Event) {
+  const input = event.target as HTMLInputElement; const file = input.files?.[0]
+  if (!file) return
+  try {
+    const r = await fetch('/api/studio/assets/upload', { method: 'POST', headers: { 'X-Filename': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' }, body: file })
+    const data = await r.json()
+    if (!r.ok) throw new Error(data.error || `上传失败（${r.status}）`)
+    const target = pageImages.value[imageIndex]
+    if (!target) return
+    // 仅替换该处图片引用，页面其余内容不动
+    const text = current.value.text || ''
+    let count = -1
+    const updated = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (full, alt, url) => {
+      count++
+      return count === imageIndex ? `![${alt || file.name}](${data.asset.url})` : full
+    })
+    const list = splitPages()
+    if (list[selected.value] !== undefined) { list[selected.value] = updated; setPages(list) }
+    message.success(`图片已替换为 ${file.name}（GIF 动图自动播放）`)
+  } catch (e: any) { message.error(e?.message || '图片替换失败') }
+  input.value = ''
+}
 async function loadAssets() { assets.value = (await (await fetch('/api/studio/assets')).json()).assets }
 async function uploadAssets(event: Event) { for (const file of Array.from((event.target as HTMLInputElement).files || [])) await fetch('/api/studio/assets/upload', { method:'POST', headers:{'X-Filename':encodeURIComponent(file.name)}, body:file }); await loadAssets() }
 async function deleteAsset(id:string) { if (!confirm(`确认删除 ${id}？`)) return; await fetch(`/api/studio/assets/${encodeURIComponent(id)}`, {method:'DELETE'}); await loadAssets() }
@@ -176,7 +247,7 @@ function testDisplay(){if(!lcdResult.value)return;const sent=publishLcdRenderRes
 function openImage(url:string){window.open(url,'_blank')}
 async function loadVersions() { versions.value = (await (await fetch('/api/studio/versions')).json()).versions }
 async function restore(id:string) { if (!confirm(`将版本 ${id} 复制为 Draft？正式版本不会改变。`)) return; const data = await (await fetch(`/api/studio/versions/${encodeURIComponent(id)}/restore`, {method:'POST'})).json(); status.value = data.status; const slides = await (await fetch('/api/studio/slides')).json(); markdown.value = slides.markdown; selected.value = 0; syncForm(); previewKey.value++; saveLabel.value = '历史版本已复制为草稿' }
-onMounted(async () => { const data = await (await fetch('/api/studio/slides')).json(); markdown.value = data.markdown; status.value = data.status; syncForm(); await loadVersions(); if (module.value === 'assets') loadAssets(); if (module.value === 'theme') loadThemes(); if(module.value==='lcd')loadLcdThemes(); if (module.value === 'system') loadSystem() })
+onMounted(async () => { const data = await (await fetch('/api/studio/slides')).json(); markdown.value = data.markdown; status.value = data.status; syncForm(); await loadVersions(); loadPortraits(); if (module.value === 'assets') loadAssets(); if (module.value === 'theme') loadThemes(); if(module.value==='lcd')loadLcdThemes(); if (module.value === 'system') loadSystem() })
 </script>
 
 <style scoped lang="scss">
@@ -204,4 +275,19 @@ onMounted(async () => { const data = await (await fetch('/api/studio/slides')).j
 .tpl-meta b{font-size:13px}
 .tpl-meta small{color:#8993a4}
 @media(max-width:1000px){.tpl-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* ---- 四岗位头像 / 页面图片替换 ---- */
+.avatar-block{margin:14px;padding:12px;border:1px solid #d5dce7;border-radius:7px;background:#fafbfd}
+.avatar-title{font-size:12px;font-weight:700;color:#40506a;margin-bottom:10px}
+.avatar-title small{display:block;font-weight:400;color:#98a2b3;margin-top:3px}
+.avatar-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.avatar-slot{display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px;border:1px solid #e2e7ef;border-radius:7px;background:#fff}
+.avatar-slot img{width:64px;height:76px;object-fit:contain;background:#f2f4f8;border-radius:5px}
+.avatar-slot b{font-size:11px;color:#51607a}
+.avatar-upload{font-size:11px;color:#2867e8;cursor:pointer;text-decoration:underline}
+.page-image{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid #e2e7ef;border-radius:7px;margin-bottom:8px;background:#fff}
+.page-image img{width:96px;height:56px;object-fit:contain;background:#f2f4f8;border-radius:4px}
+.page-image-info{flex:1;min-width:0}
+.page-image-info b{font-size:12px}
+.page-image-info small{display:block;color:#98a2b3;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
