@@ -1,6 +1,7 @@
 <template>
   <PlayView v-if="isPlayRoute && !isAudienceMode" />
   <UploadView v-else-if="isUploadRoute && !isAudienceMode" />
+  <SecondaryView v-else-if="isSecondaryRoute && !isAudienceMode" />
   <ShowFlowView v-else-if="isShowFlowRoute && !isAudienceMode && slides.length" />
   <template v-else>
     <template v-if="slides.length">
@@ -31,6 +32,7 @@ import Mobile from './views/Mobile/index.vue'
 import PlayView from './views/Play/index.vue'
 import UploadView from './views/Upload/index.vue'
 import ShowFlowView from './views/ShowFlow/index.vue'
+import SecondaryView from './views/Secondary/index.vue'
 import FullscreenSpin from '@/components/FullscreenSpin.vue'
 
 const _isPC = isPC()
@@ -51,6 +53,8 @@ const routePath = window.location.pathname.replace(/\/+$/, '') || '/'
 const isPlayRoute = routePath === '/play'
 const isUploadRoute = routePath === '/upload'
 const isShowFlowRoute = routePath === '/showflow'
+// 双 PPTist 模式的副屏（PPTist B）只读播放页：自行加载服务端上传文稿
+const isSecondaryRoute = routePath === '/secondary'
 
 if (import.meta.env.MODE !== 'development') {
   window.onbeforeunload = () => false
@@ -60,10 +64,11 @@ if (import.meta.env.MODE !== 'development') {
 if (!isAudienceMode) initPresentationBridge()
 onUnmounted(() => destroyPresentationBridge())
 
-// 多屏联动（ShowFlow）：非观众窗口初始化一次（WS 连接、源清单对账）
+// 多屏联动（ShowFlow）：非观众窗口初始化一次（WS 连接、源清单对账）；
+// /secondary 副屏页例外 —— 它是受控端，只运行 SecondaryShowFlowClient，不能注册 controller 角色
 const showFlowStore = useShowFlowStore()
 onMounted(() => {
-  if (!isAudienceMode) showFlowStore.init()
+  if (!isAudienceMode && !isSecondaryRoute) showFlowStore.init()
 })
 
 onMounted(async () => {
@@ -74,8 +79,8 @@ onMounted(async () => {
     }])
     screenStore.setScreening(true)
   }
-  else if (isPlayRoute || isUploadRoute) {
-    // 播放页 / 上传页自行管理文稿加载，不加载示例 PPT，不初始化编辑器快照数据库
+  else if (isPlayRoute || isUploadRoute || isSecondaryRoute) {
+    // 播放页 / 上传页 / 副屏页自行管理文稿加载，不加载示例 PPT，不初始化编辑器快照数据库
   }
   else {
     // 编辑器与大屏播放页对齐：服务端存在默认 PPT 时加载同一份文稿，

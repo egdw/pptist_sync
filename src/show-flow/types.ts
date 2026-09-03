@@ -10,7 +10,7 @@ import type { Slide } from '@/types/slides'
 
 export type ScreenRole = 'main' | 'secondary'
 
-export type SourceKind = 'pptist' | 'reveal-md'
+export type SourceKind = 'pptist' | 'pptist-remote' | 'reveal-md'
 
 /** 内容源（主屏 / 副屏各自注册一个） */
 export interface ContentSource {
@@ -18,7 +18,7 @@ export interface ContentSource {
   kind: SourceKind
   name: string
   role: ScreenRole
-  /** reveal-md：markdown 的服务端静态路径（如 /reveal/slides.md）；pptist 恒为 'local' */
+  /** reveal-md：markdown 的服务端静态路径（如 /reveal/slides.md）；pptist 恒为 'local'；pptist-remote 无需 */
   mdPath?: string
   /** 源内容指纹，用于 reconciliation 判断是否需要重新对账 */
   manifestVersion?: string

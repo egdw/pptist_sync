@@ -173,9 +173,11 @@ export default () => {
   }, 1000, { leading: true, trailing: false })
 
   // 多屏联动接管：ShowFlow 启用且有编排步骤时，翻页不再是 PPT next()/prev()，
-  // 而是 ShowFlow.next()/previous()（虚拟步骤时间轴，唯一播放控制权）
-  const showFlowTakeover = () => {
+  // 而是 ShowFlow.next()/previous()（虚拟步骤时间轴，唯一播放控制权）。
+  // 本机作为受控副屏（/secondary 页）时，完全忽略本机翻页，由控制器远程驱动。
+  const showFlowTakeover = (): boolean | 'suppress' => {
     const showFlowStore = useShowFlowStore()
+    if (showFlowStore.remoteControlled) return 'suppress'
     return showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
   }
 
@@ -184,7 +186,9 @@ export default () => {
   // 向上播放遇到动画时，仅撤销到动画执行前的状态，不需要反向播放动画
   // 撤回到上一页时，若该页从未播放过（意味着不存在动画状态），需要将动画索引置为最小值（初始状态），否则置为最大值（最终状态）
   const execPrev = (broadcast = true) => {
-    if (showFlowTakeover()) {
+    const takeover = showFlowTakeover()
+    if (takeover === 'suppress') return
+    if (takeover) {
       useShowFlowStore().previous()
       return
     }
@@ -207,7 +211,9 @@ export default () => {
     inAnimation.value = false
   }
   const execNext = () => {
-    if (showFlowTakeover()) {
+    const takeover = showFlowTakeover()
+    if (takeover === 'suppress') return
+    if (takeover) {
       useShowFlowStore().next()
       return
     }

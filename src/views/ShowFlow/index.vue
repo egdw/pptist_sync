@@ -29,19 +29,34 @@
       <div class="right">
         <span class="ws-status" :class="{ online: wsConnected }">{{ wsConnected ? '控制服务已连接' : '控制服务未连接' }}</span>
         <Button size="small" @click="openSecondaryScreen">打开副屏页</Button>
-        <Button size="small" @click="showFlowStore.refreshSecondaryManifest(); showFlowStore.reconcile('secondary')">刷新副屏清单</Button>
+        <Button size="small" @click="refreshSecondary">刷新副屏清单</Button>
         <Button size="small" type="primary" @click="enterScreeningWithFlow">开始联动放映</Button>
       </div>
     </header>
 
     <div class="secondary-config">
       <span class="label">副屏来源：</span>
-      <Input
-        class="md-path"
-        :value="secondarySource?.mdPath || ''"
-        @update:value="(v: string) => showFlowStore.updateSecondarySource({ mdPath: v })"
-        placeholder="Reveal Markdown 路径，如 /reveal/slides.md"
+      <Select
+        class="kind-select"
+        :value="secondarySource?.kind || 'reveal-md'"
+        :options="[
+          { label: 'PPTist 文档（服务端上传）', value: 'pptist-remote' },
+          { label: 'Reveal / Markdown', value: 'reveal-md' },
+        ]"
+        @update:value="v => switchSecondaryKind(v as 'pptist-remote' | 'reveal-md')"
       />
+      <template v-if="secondarySource?.kind === 'reveal-md'">
+        <Input
+          class="md-path"
+          :value="secondarySource?.mdPath || ''"
+          @update:value="(v: string) => showFlowStore.updateSecondarySource({ mdPath: v })"
+          placeholder="Reveal Markdown 路径，如 /reveal/slides.md"
+        />
+        <span class="meta">副屏页地址：/reveal/</span>
+      </template>
+      <template v-else>
+        <span class="meta">文档来源：服务端当前上传文稿（/upload 管理上传），副屏页地址：/secondary/</span>
+      </template>
       <span v-if="secondaryManifestError" class="error">{{ secondaryManifestError }}</span>
       <span v-else class="meta">共 {{ secondaryManifest.length }} 页</span>
     </div>
@@ -144,7 +159,11 @@
             {{ secondaryManifestError || '未加载到副屏页面，请检查上方 MD 路径' }}
           </div>
         </div>
-        <div class="pool-tip">页 id 来自 data-page-id（未标注时按内容稳定 hash 生成，建议显式标注）</div>
+        <div class="pool-tip">
+          {{ secondarySource?.kind === 'pptist-remote'
+            ? '页 id 为文稿的永久 slideId；重新上传文稿后点「刷新副屏清单」自动对账'
+            : '页 id 来自 data-page-id（未标注时按内容稳定 hash 生成，建议显式标注）' }}
+        </div>
       </section>
     </main>
 
@@ -260,7 +279,23 @@ const { enterScreening } = useScreening()
 const enterScreeningWithFlow = () => enterScreening()
 
 const openSecondaryScreen = () => {
-  window.open((secondarySource.value?.mdPath || '/reveal/slides.md').replace(/\/[^/]*\.md$/, '/') || '/reveal/', '_blank')
+  const kind = secondarySource.value?.kind
+  const url = kind === 'pptist-remote' ? '/secondary/' : '/reveal/'
+  window.open(url, '_blank')
+}
+
+/** 切换副屏内容源类型：kind 切换时清掉旧 mdPath 语义，重新拉清单并对账 */
+const switchSecondaryKind = (kind: 'pptist-remote' | 'reveal-md') => {
+  if (secondarySource.value?.kind === kind) return
+  showFlowStore.updateSecondarySource({
+    kind,
+    name: kind === 'pptist-remote' ? '副屏 PPTist（服务端上传文稿）' : '副屏 Reveal / Markdown',
+  })
+}
+
+const refreshSecondary = () => {
+  showFlowStore.refreshSecondaryManifest()
+  showFlowStore.reconcile('secondary')
 }
 
 onMounted(() => {
@@ -328,6 +363,9 @@ onMounted(() => {
   border-bottom: 1px solid #e5e5e5;
   font-size: 13px;
 
+  .kind-select {
+    width: 230px;
+  }
   .md-path {
     width: 360px;
   }

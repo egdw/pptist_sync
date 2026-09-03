@@ -11,12 +11,13 @@ import { computed, ref, watch } from 'vue'
 import { useSlidesStore } from '@/store'
 import message from '@/utils/message'
 import { PptistScreenAdapter } from './adapters/pptist'
+import { PptistRemoteScreenAdapter } from './adapters/pptistRemote'
 import { RevealMarkdownScreenAdapter, type ShowFlowTransport } from './adapters/reveal'
 import { ShowFlowController } from './controller'
 import { buildPptistManifest } from './manifest'
 import { reconcileSteps } from './reconciliation'
 import { loadShowFlowState, saveShowFlowState } from './persistence'
-import { buildShowFlowWsUrl, ShowFlowWsClient } from './websocket/client'
+import { ShowFlowWsClient, resolveShowFlowWsUrl } from './websocket/client'
 import type {
   ContentSource,
   OnlineStatus,
@@ -27,13 +28,6 @@ import type {
   ShowStep,
   StepTargetSnapshot,
 } from './types'
-
-function wsBaseUrl(): string {
-  // 同源连接：开发期经 vite 代理（/showflow ws → 8686），生产期与 node 服务器同端口
-  const { protocol, hostname, port } = window.location
-  const wsProto = protocol === 'https:' ? 'wss' : 'ws'
-  return port ? `${wsProto}://${hostname}:${port}` : `${wsProto}://${hostname}`
-}
 
 export const useShowFlowStore = defineStore('showFlow', () => {
   const slidesStore = useSlidesStore()
@@ -120,12 +114,15 @@ export const useShowFlowStore = defineStore('showFlow', () => {
 
   // ---------- Adapters ----------
   let mainAdapter: PptistScreenAdapter | null = null
-  let secondaryAdapter: RevealMarkdownScreenAdapter | null = null
+  let secondaryAdapter: RevealMarkdownScreenAdapter | PptistRemoteScreenAdapter | null = null
 
   const buildSecondaryAdapter = () => {
     const src = secondarySource.value
     if (src?.kind === 'reveal-md' && src.mdPath) {
       secondaryAdapter = new RevealMarkdownScreenAdapter(src.mdPath, transport)
+    }
+    else if (src?.kind === 'pptist-remote') {
+      secondaryAdapter = new PptistRemoteScreenAdapter(transport)
     }
     else {
       secondaryAdapter = null
@@ -134,14 +131,19 @@ export const useShowFlowStore = defineStore('showFlow', () => {
 
   const refreshSecondaryManifest = async () => {
     const src = secondarySource.value
-    if (!src || src.kind !== 'reveal-md' || !src.mdPath) {
+    if (!src || src.kind === 'pptist' /* 主屏本机文档不能作为副屏 */) {
       secondaryManifest.value = []
       secondaryManifestError.value = ''
       return
     }
     try {
       buildSecondaryAdapter()
-      secondaryManifest.value = await secondaryAdapter!.getManifest()
+      if (!secondaryAdapter) {
+        secondaryManifest.value = []
+        secondaryManifestError.value = src.kind === 'reveal-md' ? '未配置 Markdown 路径' : '副屏来源不可用'
+        return
+      }
+      secondaryManifest.value = await secondaryAdapter.getManifest()
       secondaryManifestError.value = ''
     }
     catch (err) {
@@ -203,7 +205,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     reconcile('secondary')
 
     controller = createController()
-    wsClient = new ShowFlowWsClient(buildShowFlowWsUrl(wsBaseUrl()), {
+    wsClient = new ShowFlowWsClient(resolveShowFlowWsUrl(), {
       onMessage: msg => {
         if (msg.type === 'HELLO_ACK') wsConnected.value = true
         controller?.handleWsMessage(msg)
@@ -376,6 +378,14 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     reconcile('secondary')
   }
 
+  /**
+   * 本机被远程控制器接管（PPTist 副屏页 /secondary 使用）：
+   * 为 true 时抑制本机翻页，ShowFlow 是唯一时间轴；WS 断开时复位恢复本机控制。
+   * 属于单标签页状态，不持久化。
+   */
+  const remoteControlled = ref(false)
+  const setRemoteControlled = (v: boolean) => { remoteControlled.value = v }
+
   return {
     sources,
     flow,
@@ -416,6 +426,8 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     moveStep,
     renameStep,
     updateSecondarySource,
+    remoteControlled,
+    setRemoteControlled,
     getStep,
   }
 })

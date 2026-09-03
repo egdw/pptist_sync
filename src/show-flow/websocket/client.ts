@@ -102,3 +102,11 @@ export class ShowFlowWsClient {
 export function buildShowFlowWsUrl(wsBase: string): string {
   return `${wsBase.replace(/\/+$/, '')}${SHOWFLOW_WS_PATH}`
 }
+
+/** 同源 WS 地址：开发期经 vite 代理，生产期与 node 服务器同端口。控制器与副屏页共用 */
+export function resolveShowFlowWsUrl(): string {
+  const { protocol, hostname, port } = window.location
+  const wsProto = protocol === 'https:' ? 'wss' : 'ws'
+  const base = port ? `${wsProto}://${hostname}:${port}` : `${wsProto}://${hostname}`
+  return buildShowFlowWsUrl(base)
+}
