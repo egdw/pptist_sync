@@ -33,7 +33,7 @@
           <label>页面标题<input v-model="form.title" @input="applyForm" /></label>
           <label>副标题<textarea v-model="form.subtitle" @input="applyForm"></textarea></label>
           <label>当前阶段<input v-model="form.stage" @input="applyForm" /></label>
-          <label>页面模板<input v-model="form.template" placeholder="action / compare / scene" @input="applyForm" /></label>
+          <label>页面排版（决定页面布局，选择后可继续改内容）<select v-model="form.template" @change="applyForm"><option v-for="t in templates" :key="t.id" :value="t.id">{{ t.name }} · {{ t.desc }}</option></select></label>
           <label>主导岗位<select v-model="form.lead" @change="applyForm"><option value="">无</option><option v-for="role in roles" :key="role" :value="role">{{ role }}</option></select></label>
           <fieldset><legend>参与岗位</legend><label v-for="role in roles" :key="role" class="check"><input v-model="form.active" type="checkbox" :value="role" @change="applyForm" />{{ role }}</label></fieldset>
           <label v-for="role in roles" :key="role">{{ role }} 任务<input v-model="form.tasks[role]" @input="applyForm" /></label>
