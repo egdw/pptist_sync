@@ -46,6 +46,8 @@ PPTIST_PORT=${PORT_DEFAULT}
 # 对外访问地址：其他电脑通过该地址访问上传页（已自动填入本机局域网 IP）
 PPTIST_PUBLIC_URL=http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}
 PPTIST_DATA_DIR=${DIR}/data
+# 副屏文稿（PPTist B）独立存储目录：与主屏完全独立的两份 PPT
+PPTIST_SECONDARY_DATA_DIR=${DIR}/data/secondary-ppt
 # 上传大小上限（MB），默认 1024（1GB）；需要调整时取消注释并修改
 # PPTIST_MAX_UPLOAD_MB=1024
 EOF
@@ -119,5 +121,8 @@ echo " 部署完成！"
 echo "   播放页   : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/play"
 echo "   上传页   : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/upload  （局域网其他电脑访问）"
 echo "   编辑器   : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/editor"
+echo "   联动编排 : http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/showflow"
+echo "   副屏PPTist: http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/secondary"
+echo "   副屏Reveal: http://${LAN_IP:-127.0.0.1}:${PORT_DEFAULT}/reveal"
 echo " 桌面双击「PPTist 大屏播放」即可一键启动。"
 echo "=============================================="

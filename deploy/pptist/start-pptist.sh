@@ -10,7 +10,7 @@ DIR="$(pwd)"
 
 PAGE="${1:-play}"
 case "$PAGE" in
-  play|editor|upload) ;;
+  play|editor|upload|showflow|secondary|reveal) ;;
   *) PAGE="play" ;;
 esac
 
@@ -29,12 +29,18 @@ else
   echo "[pptist] 错误：未找到 Node.js，请先执行 ./setup.sh"
   exit 1
 fi
-export PPTIST_PORT PPTIST_PUBLIC_URL PPTIST_DATA_DIR PPTIST_MAX_UPLOAD_MB
+export PPTIST_PORT PPTIST_PUBLIC_URL PPTIST_DATA_DIR PPTIST_SECONDARY_DATA_DIR PPTIST_MAX_UPLOAD_MB
 
 # ---- 0. 校验服务端文件为新版（旧文件 + 新页面会协议不一致） ----
 if ! grep -q 'uploadEnvelope' server/pptist-server.mjs 2>/dev/null; then
   echo "[pptist] 错误：server/pptist-server.mjs 是旧版文件（缺少新上传协议）。"
   echo "        请用最新部署包中的 server/pptist-server.mjs 覆盖本文件后重试。"
+  exit 1
+fi
+# ShowFlow 多屏联动的服务端依赖 ws 包（已随部署包捆绑在 server/node_modules/）
+if [ ! -d "server/node_modules/ws" ]; then
+  echo "[pptist] 错误：缺少 server/node_modules/ws（多屏联动 WebSocket 依赖）。"
+  echo "        请用最新部署包完整覆盖 server/ 目录后重试。"
   exit 1
 fi
 
