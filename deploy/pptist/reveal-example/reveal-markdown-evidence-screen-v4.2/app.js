@@ -197,7 +197,8 @@ async function mount(markdown) {
     section.append(source);
     slides.append(section);
     deck = new Reveal(document.querySelector('.reveal'), {
-      width:1600, height:900, margin:0.012, center:false,
+      /* 按视口 100% 填满整个屏幕：无外边距、无视口比例黑边 */
+      width:'100%', height:'100%', margin:0, center:false,
       hash:false, transition:'fade', transitionSpeed:'fast',
       controls:true, progress:true, slideNumber:false,
       keyboard:true, overview:true, plugins:[RevealMarkdown]
@@ -272,12 +273,16 @@ document.addEventListener('keydown', event => {
   if (event.key.toLowerCase() === 'h') document.body.classList.toggle('clean');
 });
 (async () => {
+  const studioTheme = new URLSearchParams(location.search).get('studioTheme');
+  if (studioTheme) document.querySelector('#showflow-theme').href = `/api/studio/themes/${encodeURIComponent(studioTheme)}/files/theme.css`;
   let markdown = window.DEFAULT_MARKDOWN;
   if (location.protocol !== 'file:') {
     try {
-      const response = await fetch('slides.md', {cache:'no-store'});
+      const response = await fetch(new URLSearchParams(location.search).get('studio') === 'draft' ? '/api/studio/slides/draft/raw' : 'slides.md', {cache:'no-store'});
       if (response.ok) markdown = await response.text();
     } catch { /* Offline default remains available. */ }
   }
   await mount(markdown);
+  const studioPage = Number(new URLSearchParams(location.search).get('studioPage'));
+  if (Number.isInteger(studioPage) && studioPage >= 0) deck?.slide(studioPage);
 })();
