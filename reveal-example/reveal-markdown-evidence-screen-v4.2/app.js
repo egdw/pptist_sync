@@ -290,9 +290,16 @@ document.addEventListener('keydown', event => {
     } catch { /* Offline default remains available. */ }
   }
   const thumb = params.get('thumb') === '1';
+  if (thumb) document.body.classList.add('thumb');
   await mount(markdown, {
     controls: !thumb, progress: !thumb, overview: !thumb, keyboard: !thumb,
   });
   const studioPage = Number(params.get('studioPage'));
   if (Number.isInteger(studioPage) && studioPage >= 0) deck?.slide(studioPage);
 })();
+
+/* 演示控件自动隐藏：鼠标移近屏幕底部边缘（64px 内）时淡入，移开即淡出 */
+document.addEventListener('mousemove', event => {
+  const nearBottom = event.clientY > window.innerHeight - 64;
+  document.body.classList.toggle('chrome-show', nearBottom);
+});

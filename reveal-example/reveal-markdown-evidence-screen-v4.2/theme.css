@@ -17,7 +17,7 @@ body {
 .reveal .slides > section {
   /* Reveal requires slides to remain absolutely positioned. v4 accidentally changed this to relative,
      causing all 16 slides to stack vertically when opened from file://. */
-  position:absolute; width:100%; height:100%; margin:0; padding:74px 36px 154px; overflow:hidden;
+  position:absolute; width:100%; height:900px; margin:0; padding:74px 36px 154px; overflow:hidden;
   background:
     linear-gradient(90deg,rgba(39,132,255,.045) 1px,transparent 1px),
     linear-gradient(rgba(39,132,255,.035) 1px,transparent 1px),
@@ -205,10 +205,17 @@ body {
 
 .reveal .progress { height:2px; color:#2cbfff; }
 .reveal .controls { color:#28c8ff; bottom:20px; right:18px; transform:scale(.65); }
-.toolbar { position:fixed; z-index:20; left:20px; bottom:16px; display:flex; gap:8px; opacity:.28; }
-.toolbar:hover,.toolbar:focus-within { opacity:1; }
+/* 演示控件默认完全隐藏（不占屏幕），鼠标移近底部边缘时由 app.js 挂 chrome-show 淡入 */
+.toolbar { position:fixed; z-index:20; left:20px; bottom:16px; display:flex; gap:8px; }
+.toolbar, .reveal .controls, .reveal .progress { opacity:0; pointer-events:none; transition:opacity .3s ease; }
+body.chrome-show .toolbar,
+body.chrome-show .reveal .controls,
+body.chrome-show .reveal .progress { opacity:1; pointer-events:auto; }
+body.chrome-show .toolbar:hover, body.chrome-show .toolbar:focus-within { opacity:1; }
 .toolbar button,.file-button { font-family:inherit; font-size:13px; background:#082541; color:#bed7e8; border:1px solid var(--line); border-radius:3px; padding:7px 12px; cursor:pointer; }
 .file-button input { position:absolute; width:1px; height:1px; opacity:0; }
 body.clean .toolbar,body.clean .controls,body.clean .progress { display:none!important; }
+/* 缩略图模式：全部演示控件与提示彻底隐藏 */
+body.thumb .toolbar, body.thumb .controls, body.thumb .progress, body.thumb #notice { display:none!important; }
 #notice { position:fixed; z-index:50; top:10px; left:50%; transform:translateX(-50%); color:#d8ecfa; background:#082541; font-size:14px; }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; } }
