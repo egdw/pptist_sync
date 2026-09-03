@@ -30,6 +30,8 @@ export interface PageManifest {
   /** 真实页码（从 1 开始），仅用于 UI 显示，禁止用于持久引用 */
   index: number
   title: string
+  /** MD 页面 H1 下的第一行副标题（用于编排时辅助识别页面） */
+  subtitle?: string
   /** PPTist 提供（由 slideId 推导的缩略图路径），Reveal 无 */
   thumbnail?: string
   notes?: string

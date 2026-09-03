@@ -2,7 +2,7 @@
   <PlayView v-if="isPlayRoute && !isAudienceMode" />
   <UploadView v-else-if="isUploadRoute && !isAudienceMode" />
   <SecondaryView v-else-if="isSecondaryRoute && !isAudienceMode" />
-  <ShowFlowView v-else-if="isShowFlowRoute && !isAudienceMode && slides.length" />
+  <ShowFlowView v-else-if="isShowFlowRoute && !isAudienceMode && slides.length && !screening" />
   <template v-else>
     <template v-if="slides.length">
       <Screen v-if="screening" />

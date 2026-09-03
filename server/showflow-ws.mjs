@@ -31,12 +31,37 @@ export function attachShowFlowWs(server, log = () => {}) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg))
   }
 
+  /** 探测旧连接是否存活：协议级 ping（浏览器自动回 pong），超时视为僵尸 */
+  function probeAlive(ws, timeoutMs = 1000) {
+    return new Promise(resolve => {
+      let settled = false
+      const onPong = () => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(true)
+      }
+      const cleanup = () => {
+        ws.removeListener('pong', onPong)
+        clearTimeout(timer)
+      }
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(false)
+      }, timeoutMs)
+      ws.once('pong', onPong)
+      try { ws.ping() } catch { cleanup(); resolve(false) }
+    })
+  }
+
   wss.on('connection', (ws, req) => {
     const peer = `${req.socket.remoteAddress}:${req.socket.remotePort}`
     clients.set(ws, { role: null })
     log(`[showflow-ws] 连接 ${peer}`)
 
-    ws.on('message', raw => {
+    ws.on('message', async raw => {
       let msg
       try {
         msg = JSON.parse(raw.toString())
@@ -54,10 +79,20 @@ export function attachShowFlowWs(server, log = () => {}) {
           ws.close()
           return
         }
-        if (SINGLE_INSTANCE_ROLES.has(role) && byRole(role).length > 0) {
-          send(ws, { type: 'ERROR', code: 'ROLE_TAKEN', message: `${role} 角色已存在，一个会话只允许一个` })
-          ws.close()
-          return
+        if (SINGLE_INSTANCE_ROLES.has(role)) {
+          const existing = byRole(role)[0]
+          if (existing && existing !== ws) {
+            // 旧连接仍存活：拒绝（一个会话只允许一个）；旧连接已死（如关页后残留）：探测确认后踢掉接管
+            const alive = await probeAlive(existing)
+            if (alive) {
+              send(ws, { type: 'ERROR', code: 'ROLE_TAKEN', message: `${role} 角色已由其他窗口占用` })
+              ws.close()
+              return
+            }
+            log(`[showflow-ws] 检测到僵尸 ${role} 连接，由新连接接管`)
+            clients.delete(existing)
+            try { existing.terminate() } catch { /* 已死 */ }
+          }
         }
         clients.set(ws, { role, meta: msg.meta || {} })
         send(ws, { type: 'HELLO_ACK', role, meta: msg.meta })

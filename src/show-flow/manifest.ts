@@ -43,23 +43,31 @@ export function parseMarkdownManifest(md: string): PageManifest[] {
   const lines = md.replace(/\r\n/g, '\n')
   const rawSections = lines.split(SECTION_SEPARATOR)
   const manifest: PageManifest[] = []
-  let index = 0
   for (const section of rawSections) {
-    // 跳过 front-matter 与纯空 section
-    if (index === 0 && /^\s*(---|<!--)/.test(section) && !section.includes('# ')) continue
     const trimmed = section.trim()
     if (!trimmed) continue
     const attrs = parseSlideAttrs(trimmed)
     const h1 = trimmed.match(H1_RE)
     const title = (attrs['title'] || (h1 ? h1[1] : '')).trim()
+    // 副标题：H1 之后的第一行非空正文（跳过注释/分隔线/表格分隔），用于编排时辅助识别
+    let subtitle: string | undefined
+    if (h1) {
+      const afterH1 = trimmed.slice((h1.index ?? 0) + h1[0].length)
+      for (const line of afterH1.split('\n')) {
+        const t = line.trim()
+        if (!t || t.startsWith('<!--') || t.startsWith('#') || /^\|[\s:|-]+\|$/.test(t)) continue
+        subtitle = t.replace(/\*\*/g, '').slice(0, 60)
+        break
+      }
+    }
     manifest.push({
       id: attrs['page-id'] || stablePageHash(trimmed),
       index: manifest.length + 1,
       title: title || `未命名页 ${manifest.length + 1}`,
+      subtitle,
       stage: attrs['stage'] || undefined,
       tabletScene: attrs['tablet-scene'] || undefined,
     })
-    index++
   }
   return manifest
 }

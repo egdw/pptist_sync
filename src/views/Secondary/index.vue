@@ -6,6 +6,15 @@
         <div class="placeholder-icon"><i-icon-park-outline:ppt class="icon" /></div>
         <div class="placeholder-text">暂无副屏文稿</div>
         <div class="placeholder-sub">这是副屏（PPTist B）独立文稿槽位，与主屏 PPT 完全独立。请在 /upload 页将上传目标切到「副屏文稿」上传，上传后本页自动更新</div>
+        <button class="retry-btn" @click="retry()">重新加载</button>
+      </div>
+    </div>
+    <div v-else-if="phase === 'error'" class="placeholder">
+      <div class="placeholder-main">
+        <div class="placeholder-icon error"><i-icon-park-outline:close-one class="icon" /></div>
+        <div class="placeholder-text">副屏文稿加载失败</div>
+        <div class="placeholder-sub">{{ errorMessage }}</div>
+        <button class="retry-btn" @click="retry()">重试</button>
       </div>
     </div>
     <BaseView v-else :changeViewMode="noop" />
@@ -39,8 +48,21 @@ import FullscreenSpin from '@/components/FullscreenSpin.vue'
 const slidesStore = useSlidesStore()
 const showFlowStore = useShowFlowStore()
 
-const phase = ref<'loading' | 'empty' | 'playing'>('loading')
+const phase = ref<'loading' | 'empty' | 'playing' | 'error'>('loading')
 const loadedSeq = ref(0)
+const errorMessage = ref('')
+
+/** 带超时的 fetch：服务端不可达 / 接口挂起时不再无限转圈 */
+async function fetchWithTimeout(url: string, timeoutMs = 8000): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { cache: 'no-store', signal: controller.signal })
+  }
+  finally {
+    clearTimeout(timer)
+  }
+}
 
 // ---------- 文档加载 / 热更新（与 /play 播放页同源逻辑） ----------
 let syncing = false
@@ -54,8 +76,9 @@ async function syncLoop() {
   syncing = true
   try {
     const meta = latestNotice && latestNotice.exists ? latestNotice : await fetchSecondaryDocCurrent()
-    if (!meta.exists) {
-      if (phase.value === 'loading') phase.value = 'empty'
+    // meta 可能为 null：服务端版本过旧（无此接口，SPA 回退返回 HTML）时 requestJson 解析失败返回 null
+    if (!meta || !meta.exists) {
+      if (phase.value === 'loading' || phase.value === 'error') phase.value = 'empty'
       return
     }
     if ((meta.seq || 0) <= loadedSeq.value) {
@@ -70,13 +93,24 @@ async function syncLoop() {
     docName.value = bundle.title || meta.filename || '未命名文稿'
     phase.value = 'playing'
   }
-  catch {
-    if (phase.value === 'loading') phase.value = 'empty'
-    // 热更新失败时保持旧文稿继续播放
+  catch (error) {
+    // 首次加载失败：进入错误态（可重试）；热更新失败：保持旧文稿继续播放
+    if (phase.value === 'loading' || phase.value === 'empty') {
+      phase.value = 'error'
+      const err = error as Error
+      errorMessage.value = err?.name === 'AbortError'
+        ? '连接服务端超时，请确认服务端已启动（且为本项目最新版本的 server/pptist-server.mjs）'
+        : (err?.message || '未知错误，请确认服务端为最新版本（需支持 /showflow-api/secondary-doc 接口）')
+    }
   }
   finally {
     syncing = false
   }
+}
+
+const retry = () => {
+  phase.value = 'loading'
+  syncLoop()
 }
 
 const handleVersionNotice = (meta: DefaultPptMeta) => {
@@ -194,6 +228,8 @@ onUnmounted(() => {
   }
   .placeholder-icon .icon {
     font-size: 56px;
+
+    &.error { color: #e07b7b; }
   }
   .placeholder-text {
     font-size: 20px;
@@ -203,6 +239,18 @@ onUnmounted(() => {
     font-size: 13px;
     color: #888;
     line-height: 1.6;
+  }
+  .retry-btn {
+    margin-top: 18px;
+    border: 1px solid rgba(255, 255, 255, .25);
+    background: rgba(255, 255, 255, .08);
+    color: #ddd;
+    border-radius: 6px;
+    font-size: 13px;
+    padding: 6px 18px;
+    cursor: pointer;
+
+    &:hover { background: rgba(255, 255, 255, .16); }
   }
 }
 

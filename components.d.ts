@@ -51,6 +51,7 @@ declare module 'vue' {
     'IIconParkOutline:clear': typeof import('~icons/icon-park-outline/clear')['default']
     'IIconParkOutline:click': typeof import('~icons/icon-park-outline/click')['default']
     'IIconParkOutline:close': typeof import('~icons/icon-park-outline/close')['default']
+    'IIconParkOutline:closeOne': typeof import('~icons/icon-park-outline/close-one')['default']
     'IIconParkOutline:closeSmall': typeof import('~icons/icon-park-outline/close-small')['default']
     'IIconParkOutline:code': typeof import('~icons/icon-park-outline/code')['default']
     'IIconParkOutline:command': typeof import('~icons/icon-park-outline/command')['default']

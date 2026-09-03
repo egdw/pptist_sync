@@ -9,10 +9,12 @@
 import type { PageManifest, ScreenAdapter, ScreenRole } from '../types'
 import { buildPptistManifest } from '../manifest'
 import { fetchSecondaryDocSlides } from '@/services/defaultPpt'
+import type { Slide } from '@/types/slides'
 import type { ShowFlowTransport } from './reveal'
 
 export class PptistRemoteScreenAdapter implements ScreenAdapter {
   private cache: { version: string; manifest: PageManifest[] } | null = null
+  private slides: Slide[] = []
   private executing = new Set<string>()
 
   constructor(private transport: ShowFlowTransport) {}
@@ -25,11 +27,17 @@ export class PptistRemoteScreenAdapter implements ScreenAdapter {
   async getManifest(): Promise<PageManifest[]> {
     if (this.cache) return this.cache.manifest
     const { bundle, version } = await fetchSecondaryDocSlides()
+    this.slides = bundle.slides
     this.cache = {
       version: `${version}-${bundle.slides.length}`,
       manifest: buildPptistManifest(bundle.slides),
     }
     return this.cache.manifest
+  }
+
+  /** 副屏文稿原始 slides（编排页渲染缩略图用） */
+  getSlides(): Slide[] {
+    return this.slides
   }
 
   async gotoById(pageId: string, commandId: string): Promise<void> {

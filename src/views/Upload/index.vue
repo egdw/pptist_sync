@@ -172,7 +172,8 @@ const playUrl = computed(() => {
 })
 const secondaryUrl = computed(() => {
   const base = (config.value.publicBaseUrl || window.location.origin).replace(/\/+$/, '')
-  return `${base}/secondary/`
+  // 不带尾斜杠：相对路径资源在 /secondary/ 子路径下会 404
+  return `${base}/secondary`
 })
 
 const progressVisible = computed(() => uploading.value || parsing.value)

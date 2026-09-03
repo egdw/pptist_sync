@@ -527,6 +527,15 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 405, { error: 'Method Not Allowed' })
       return
     }
+
+    // SPA 子路由尾斜杠重定向：构建产物资源为相对路径（./assets/...），
+    // /secondary/ 会被浏览器解析为 /secondary/assets/... 导致 404、应用无法挂载
+    if (pathname.length > 1 && pathname.endsWith('/') && !path.extname(pathname) && !pathname.startsWith('/reveal')) {
+      res.writeHead(301, { Location: pathname.replace(/\/+$/, '') || '/' })
+      res.end()
+      return
+    }
+
     await serveStatic(req, res, pathname)
   }
   catch (error) {

@@ -81,11 +81,17 @@ export function fetchSecondaryDocCurrent(): Promise<DefaultPptMeta> {
 
 export async function fetchSecondaryDocSlides(): Promise<{ bundle: DefaultPptBundle; version: string; seq: number }> {
   const response = await fetch(`${SECONDARY_API_BASE}/current/slides`, { cache: 'no-store' })
-  if (!response.ok) {
-    const data = await response.json().catch(() => null)
-    throw new Error((data && (data as { error?: string }).error) || `获取副屏文稿失败（${response.status}）`)
+  const bundle = await response.json().catch(() => null)
+  if (!response.ok || !bundle || !Array.isArray((bundle as DefaultPptBundle).slides)) {
+    const err = (bundle as { error?: string } | null)?.error
+    throw new Error(
+      err ||
+      // 旧版服务端对未知路径回退返回 index.html（HTTP 200），据此给出可行动的提示
+      (response.ok
+        ? '服务端未提供副屏文稿接口（版本过旧），请更新 server/pptist-server.mjs 并重启服务'
+        : `获取副屏文稿失败（${response.status}）`),
+    )
   }
-  const bundle = await response.json() as DefaultPptBundle
   const version = response.headers.get('X-PPTist-Version') || ''
   const seq = Number((version.match(/^v(\d+)$/) || [])[1] || 0)
   return { bundle, version, seq }

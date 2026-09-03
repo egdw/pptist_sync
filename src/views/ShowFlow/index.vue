@@ -55,7 +55,7 @@
         <span class="meta">副屏页地址：/reveal/</span>
       </template>
       <template v-else>
-        <span class="meta">文档来源：服务端「副屏文稿」槽位（/upload 页选择「副屏文稿（PPTist B）」上传），与主屏完全独立；副屏页地址：/secondary/</span>
+        <span class="meta">文档来源：服务端「副屏文稿」槽位（/upload 页选择「副屏文稿（PPTist B）」上传），与主屏完全独立；副屏页地址：/secondary</span>
       </template>
       <span v-if="secondaryManifestError" class="error">{{ secondaryManifestError }}</span>
       <span v-else class="meta">共 {{ secondaryManifest.length }} 页</span>
@@ -69,16 +69,21 @@
           <div
             v-for="page in mainManifest"
             :key="page.id"
-            class="pool-item"
+            class="pool-item card-item"
             :class="{ used: mainUsedIds.has(page.id) }"
             draggable="true"
-            :data-transfer="transferData('main', page.id)"
             @dragstart="onPageDragStart($event, 'main', page.id)"
             @click="showFlowStore.addPageToStep('main', page.id)"
           >
-            <span class="page-index">{{ page.index }}</span>
-            <span class="page-title" :title="page.notes">{{ page.title }}</span>
-            <span class="page-badge" v-if="mainStepNo(page.id)">Step {{ mainStepNo(page.id) }}</span>
+            <div class="pool-thumb">
+              <ThumbnailSlide v-if="mainSlideOf(page.index)" :slide="mainSlideOf(page.index)!" :size="124" />
+              <div class="thumb-fallback" v-else>{{ page.index }}</div>
+            </div>
+            <div class="pool-meta">
+              <span class="page-index">{{ page.index }}</span>
+              <span class="page-title" :title="page.notes">{{ page.title }}</span>
+              <span class="page-badge" v-if="mainStepNo(page.id)">Step {{ mainStepNo(page.id) }}</span>
+            </div>
           </div>
           <div v-if="!mainManifest.length" class="empty">主屏暂无页面</div>
         </div>
@@ -118,11 +123,13 @@
               <div class="step-targets">
                 <div class="target main" :class="{ active: step.main?.action === 'goto' }">
                   <span class="role">主</span>
+                  <ThumbnailSlide v-if="mainThumbOf(step)" :slide="mainThumbOf(step)!" :size="36" class="mini-thumb" />
                   <span class="title">{{ mainTargetTitle(step) }}</span>
                   <button v-if="step.main?.action === 'goto'" class="clear" title="清除主屏引用" @click="showFlowStore.removePageFromStep('main', step.id)">×</button>
                 </div>
                 <div class="target secondary" :class="{ active: step.secondary?.action === 'goto' }">
                   <span class="role">副</span>
+                  <ThumbnailSlide v-if="secondaryThumbOf(step)" :slide="secondaryThumbOf(step)!" :size="36" class="mini-thumb" />
                   <span class="title">{{ secondaryTargetTitle(step) }}</span>
                   <button v-if="step.secondary?.action === 'goto'" class="clear" title="清除副屏引用" @click="showFlowStore.removePageFromStep('secondary', step.id)">×</button>
                 </div>
@@ -140,29 +147,49 @@
 
       <!-- 右：副屏页面池 -->
       <section class="pool">
-        <div class="pool-title">副屏页面池（Reveal / Markdown）</div>
+        <div class="pool-title">副屏页面池（{{ isMdPool ? 'Reveal / Markdown' : 'PPTist B 文稿' }}）</div>
         <div class="pool-list">
           <div
             v-for="page in secondaryManifest"
             :key="page.id"
-            class="pool-item"
+            class="pool-item card-item"
             :class="{ used: secondaryUsedIds.has(page.id) }"
             draggable="true"
             @dragstart="onPageDragStart($event, 'secondary', page.id)"
             @click="showFlowStore.addPageToStep('secondary', page.id)"
           >
-            <span class="page-index">{{ page.index }}</span>
-            <span class="page-title" :title="page.stage">{{ page.title }}</span>
-            <span class="page-badge" v-if="secondaryStepNo(page.id)">Step {{ secondaryStepNo(page.id) }}</span>
+            <template v-if="!isMdPool">
+              <div class="pool-thumb">
+                <ThumbnailSlide v-if="secondarySlideOf(page.index)" :slide="secondarySlideOf(page.index)!" :size="124" />
+                <div class="thumb-fallback" v-else>{{ page.index }}</div>
+              </div>
+              <div class="pool-meta">
+                <span class="page-index">{{ page.index }}</span>
+                <span class="page-title">{{ page.title }}</span>
+                <span class="page-badge" v-if="secondaryStepNo(page.id)">Step {{ secondaryStepNo(page.id) }}</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="pool-thumb md-thumb">
+                <div class="md-h1">{{ page.title }}</div>
+                <div class="md-sub" v-if="page.subtitle">{{ page.subtitle }}</div>
+              </div>
+              <div class="pool-meta">
+                <span class="page-index">{{ page.index }}</span>
+                <span class="page-title">{{ page.subtitle || page.stage || '（无副标题）' }}</span>
+                <span class="page-badge stage-badge" v-if="page.stage">{{ page.stage }}</span>
+                <span class="page-badge" v-if="secondaryStepNo(page.id)">Step {{ secondaryStepNo(page.id) }}</span>
+              </div>
+            </template>
           </div>
           <div v-if="!secondaryManifest.length" class="empty">
-            {{ secondaryManifestError || '未加载到副屏页面，请检查上方 MD 路径' }}
+            {{ secondaryManifestError || '未加载到副屏页面，请检查上方来源配置' }}
           </div>
         </div>
         <div class="pool-tip">
-          {{ secondarySource?.kind === 'pptist-remote'
-            ? '页 id 为副屏文稿的永久 slideId；在 /upload 重新上传「副屏文稿」后点「刷新副屏清单」自动对账'
-            : '页 id 来自 data-page-id（未标注时按内容稳定 hash 生成，建议显式标注）' }}
+          {{ isMdPool
+            ? '卡片显示各页一级标题与副标题，方便识别；页 id 来自 data-page-id（建议显式标注）'
+            : '页 id 为副屏文稿的永久 slideId；在 /upload 重新上传「副屏文稿」后点「刷新副屏清单」自动对账' }}
         </div>
       </section>
     </main>
@@ -178,15 +205,33 @@
 import { computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useShowFlowStore } from '@/show-flow/store'
+import { useSlidesStore } from '@/store'
 import useScreening from '@/hooks/useScreening'
 import type { ShowStep } from '@/show-flow/types'
+import type { Slide } from '@/types/slides'
 import Button from '@/components/Button.vue'
 import Input from '@/components/Input.vue'
 import Select from '@/components/Select.vue'
 import Switch from '@/components/Switch.vue'
+import ThumbnailSlide from '@/views/components/ThumbnailSlide/index.vue'
 
 const showFlowStore = useShowFlowStore()
-const { flow, sources, mainManifest, secondaryManifest, secondaryManifestError, snapshot, wsConnected, lastReport } = storeToRefs(showFlowStore)
+const slidesStore = useSlidesStore()
+const { flow, sources, mainManifest, secondaryManifest, secondaryManifestError, secondarySlides, snapshot, wsConnected, lastReport } = storeToRefs(showFlowStore)
+const { slides: mainSlides } = storeToRefs(slidesStore)
+
+// 副屏内容源类型：PPTist 文稿渲染真实缩略图，Reveal/Markdown 渲染 H1 文本卡
+const isMdPool = computed(() => secondarySource.value?.kind !== 'pptist-remote')
+
+const mainSlideOf = (index: number): Slide | undefined => mainSlides.value[index - 1]
+const secondarySlideOf = (index: number): Slide | undefined => secondarySlides.value[index - 1]
+const mainThumbOf = (step: ShowStep): Slide | undefined =>
+  step.main?.action === 'goto' ? mainSlideOf(mainManifest.value.find(p => p.id === step.main?.pageId)?.index ?? -1) : undefined
+const secondaryThumbOf = (step: ShowStep): Slide | undefined => {
+  if (isMdPool.value) return undefined
+  if (step.secondary?.action !== 'goto') return undefined
+  return secondarySlideOf(secondaryManifest.value.find(p => p.id === step.secondary?.pageId)?.index ?? -1)
+}
 
 const mainSource = computed(() => sources.value.find(s => s.role === 'main'))
 const secondarySource = computed(() => sources.value.find(s => s.role === 'secondary'))
@@ -279,8 +324,8 @@ const { enterScreening } = useScreening()
 const enterScreeningWithFlow = () => enterScreening()
 
 const openSecondaryScreen = () => {
-  const kind = secondarySource.value?.kind
-  const url = kind === 'pptist-remote' ? '/secondary/' : '/reveal/'
+  // 注意：不能带尾斜杠 —— base 为相对路径时 /secondary/ 会导致资源解析到 /secondary/assets/ 404
+  const url = secondarySource.value?.kind === 'pptist-remote' ? '/secondary' : '/reveal'
   window.open(url, '_blank')
 }
 
@@ -408,28 +453,76 @@ onMounted(() => {
 }
 
 .pool-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
   border: 1px solid #e8e8e8;
   border-radius: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
   cursor: grab;
   font-size: 13px;
   background: #fff;
-  transition: background .2s;
+  transition: background .2s, border-color .2s;
+  overflow: hidden;
 
-  &:hover { background: #f5f7ff; }
+  &:hover { background: #f5f7ff; border-color: #c9d6f5; }
   &.used {
     background: #f6f6f6;
     .page-title { color: #aaa; }
+    .pool-thumb { opacity: .45; }
+    &.md-thumb { opacity: 1; }
   }
 
+  .pool-thumb {
+    display: flex;
+    justify-content: center;
+    background: #eef0f4;
+    padding: 6px;
+
+    :deep(.thumbnail-slide) {
+      // ThumbnailSlide 内的 .background 为 absolute 定位，必须建立定位上下文，否则色块逃逸到文档层
+      position: relative;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, .18);
+      flex-shrink: 0;
+    }
+
+    &.md-thumb {
+      display: block;
+      text-align: left;
+      min-height: 64px;
+      background: linear-gradient(135deg, #f0f4ff 0%, #faf6ff 100%);
+    }
+  }
+  .thumb-fallback {
+    width: 124px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #bbb;
+    font-size: 20px;
+  }
+  .md-h1 {
+    font-size: 14px;
+    font-weight: 700;
+    color: #333;
+    line-height: 1.45;
+    word-break: break-all;
+  }
+  .md-sub {
+    font-size: 11px;
+    color: #889;
+    margin-top: 5px;
+    line-height: 1.5;
+    word-break: break-all;
+  }
+
+  .pool-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+  }
   .page-index {
     flex-shrink: 0;
-    width: 22px;
-    height: 22px;
+    min-width: 20px;
+    height: 20px;
     border-radius: 4px;
     background: #eceffc;
     color: #5b9bd5;
@@ -437,6 +530,7 @@ onMounted(() => {
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 0 4px;
   }
   .page-title {
     flex: 1;
@@ -448,6 +542,12 @@ onMounted(() => {
     flex-shrink: 0;
     font-size: 11px;
     color: #19b26b;
+  }
+  .stage-badge {
+    color: #9c6cd4;
+    background: #f4eeff;
+    border-radius: 3px;
+    padding: 0 5px;
   }
 }
 
@@ -549,6 +649,11 @@ onMounted(() => {
     &.active {
       background: #eef4ff;
       color: #333;
+    }
+    .mini-thumb {
+      flex-shrink: 0;
+      position: relative;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, .08);
     }
     .role {
       flex-shrink: 0;

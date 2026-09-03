@@ -54,6 +54,8 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const mainManifest = ref<PageManifest[]>([])
   const secondaryManifest = ref<PageManifest[]>([])
   const secondaryManifestError = ref('')
+  /** 副屏为 PPTist 文稿时的原始 slides（编排页渲染缩略图用） */
+  const secondarySlides = ref<import('@/types/slides').Slide[]>([])
 
   const getStep = (i: number): ShowStep | undefined => flow.value.steps[i]
 
@@ -133,6 +135,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     const src = secondarySource.value
     if (!src || src.kind === 'pptist' /* 主屏本机文档不能作为副屏 */) {
       secondaryManifest.value = []
+      secondarySlides.value = []
       secondaryManifestError.value = ''
       return
     }
@@ -140,14 +143,17 @@ export const useShowFlowStore = defineStore('showFlow', () => {
       buildSecondaryAdapter()
       if (!secondaryAdapter) {
         secondaryManifest.value = []
+        secondarySlides.value = []
         secondaryManifestError.value = src.kind === 'reveal-md' ? '未配置 Markdown 路径' : '副屏来源不可用'
         return
       }
       secondaryManifest.value = await secondaryAdapter.getManifest()
+      secondarySlides.value = secondaryAdapter instanceof PptistRemoteScreenAdapter ? secondaryAdapter.getSlides() : []
       secondaryManifestError.value = ''
     }
     catch (err) {
       secondaryManifest.value = []
+      secondarySlides.value = []
       secondaryManifestError.value = (err as Error).message
     }
   }
@@ -205,9 +211,18 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     reconcile('secondary')
 
     controller = createController()
+    let roleTakenNotified = false
     wsClient = new ShowFlowWsClient(resolveShowFlowWsUrl(), {
       onMessage: msg => {
         if (msg.type === 'HELLO_ACK') wsConnected.value = true
+        if (msg.type === 'ERROR' && msg.code === 'ROLE_TAKEN') {
+          // 本页被拒绝为 controller：另一窗口的控制台仍在线（僵尸连接会被服务端探测后接管）
+          if (!roleTakenNotified) {
+            roleTakenNotified = true
+            message.warning('已有控制台在其他窗口运行，本页暂不取得控制权', { duration: 3000 })
+          }
+          return
+        }
         controller?.handleWsMessage(msg)
       },
       onDisconnect: () => {
@@ -395,6 +410,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     mainManifest,
     secondaryManifest,
     secondaryManifestError,
+    secondarySlides,
     phase,
     snapshot,
     currentStepIndex,
