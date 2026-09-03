@@ -97,9 +97,9 @@ export interface ShowFlow {
   unmappedPool?: Record<string, string[]>
 }
 
-/** 持久化整体结构（v2 起支持多方案：flows + activeFlowId；flow 字段保留为当前方案镜像，便于回滚兼容） */
+/** 持久化整体结构（v3 起支持多方案 + 副屏源指向 Studio 发布内容；flow 字段保留为当前方案镜像，便于回滚兼容） */
 export interface ShowFlowPersistence {
-  version: 1 | 2
+  version: 1 | 2 | 3
   sources: ContentSource[]
   flow: ShowFlow
   /** v2：全部已保存方案 */

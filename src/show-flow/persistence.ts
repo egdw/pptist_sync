@@ -14,7 +14,8 @@ export function defaultSecondarySource(): ContentSource {
     kind: 'reveal-md',
     name: '副屏 Reveal / Markdown',
     role: 'secondary',
-    mdPath: '/reveal/slides.md',
+    // Studio「发布」后的正式内容（从未编辑时自动播种原始样例）；与 Studio 页面内容编辑同源
+    mdPath: '/api/studio/slides/active/raw',
   }
 }
 
@@ -37,9 +38,44 @@ export function defaultSources(): ContentSource[] {
   ]
 }
 
+/** 跨版本迁移（本地缓存与服务端方案共用）：单方案→多方案、未编排池随方案、mdPath 默认值升级、补齐缺失角色源 */
+export function migrateShowFlowState(parsed: ShowFlowPersistence): ShowFlowPersistence {
+  const flows = Array.isArray(parsed.flows) && parsed.flows.length ? parsed.flows : [parsed.flow]
+  const activeFlowId = parsed.activeFlowId && flows.some(f => f.id === parsed.activeFlowId)
+    ? parsed.activeFlowId
+    : flows[0].id
+  // 旧版全局未编排池迁移到当前方案内
+  const activeFlow = flows.find(f => f.id === activeFlowId)
+  if (parsed.unmappedPool && activeFlow && !activeFlow.unmappedPool) {
+    activeFlow.unmappedPool = parsed.unmappedPool
+  }
+  // v3：reveal 副屏默认源从静态样例文件切到 Studio 发布内容（老用户自定义的其他路径不动）
+  for (const source of parsed.sources || []) {
+    if (source.kind === 'reveal-md' && source.mdPath === '/reveal/slides.md') {
+      source.mdPath = defaultSecondarySource().mdPath
+    }
+  }
+  // 旧版缓存可能缺 main/secondary 源（缺 secondary 会导致副屏池永远为空）
+  const sources = parsed.sources?.length ? [...parsed.sources] : defaultSources()
+  if (!sources.some(s => s.role === 'main')) {
+    sources.unshift({ id: 'main-pptist', kind: 'pptist', name: '主屏 PPTist（当前文稿）', role: 'main' })
+  }
+  if (!sources.some(s => s.role === 'secondary')) {
+    sources.push(defaultSecondarySource())
+  }
+  return {
+    version: 3,
+    sources,
+    flow: { ...createDefaultFlow(), ...parsed.flow },
+    flows: flows.map(f => ({ ...createDefaultFlow(), ...f })),
+    activeFlowId,
+    unmappedPool: parsed.unmappedPool || {},
+  }
+}
+
 export function loadShowFlowState(): ShowFlowPersistence {
   const fallback: ShowFlowPersistence = {
-    version: 2,
+    version: 3,
     sources: defaultSources(),
     flow: createDefaultFlow(),
     flows: [],
@@ -50,25 +86,7 @@ export function loadShowFlowState(): ShowFlowPersistence {
     if (!raw) return fallback
     const parsed = JSON.parse(raw) as ShowFlowPersistence
     if (!parsed?.flow || !Array.isArray(parsed.flow.steps)) return fallback
-    // 迁移：v1 单方案 → v2 方案列表
-    const flows = Array.isArray(parsed.flows) && parsed.flows.length ? parsed.flows : [parsed.flow]
-    const activeFlowId = parsed.activeFlowId && flows.some(f => f.id === parsed.activeFlowId)
-      ? parsed.activeFlowId
-      : flows[0].id
-    // 旧版全局未编排池迁移到当前方案内
-    const activeFlow = flows.find(f => f.id === activeFlowId)
-    if (parsed.unmappedPool && activeFlow && !activeFlow.unmappedPool) {
-      activeFlow.unmappedPool = parsed.unmappedPool
-    }
-    // 简单迁移兜底：缺失字段用默认值补齐
-    return {
-      version: 2,
-      sources: parsed.sources?.length ? parsed.sources : defaultSources(),
-      flow: { ...createDefaultFlow(), ...parsed.flow },
-      flows: flows.map(f => ({ ...createDefaultFlow(), ...f })),
-      activeFlowId,
-      unmappedPool: parsed.unmappedPool || {},
-    }
+    return migrateShowFlowState(parsed)
   }
   catch {
     return fallback

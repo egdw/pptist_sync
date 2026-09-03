@@ -18,7 +18,7 @@ import { LcdController } from './lcd/lcd-controller'
 import { publishPresentationMqtt } from '@/utils/presentation/bridge'
 import { buildPptistManifest } from './manifest'
 import { reconcileSteps } from './reconciliation'
-import { loadShowFlowState, loadShowFlowStateFromServer, saveShowFlowState, saveShowFlowStateToServer } from './persistence'
+import { loadShowFlowState, loadShowFlowStateFromServer, migrateShowFlowState, saveShowFlowState, saveShowFlowStateToServer } from './persistence'
 import { ShowFlowWsClient, resolveShowFlowWsUrl } from './websocket/client'
 import type {
   ContentSource,
@@ -302,10 +302,12 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     try {
       const remote = await loadShowFlowStateFromServer()
       if (remote?.flows?.length || remote?.flow?.steps) {
-        sources.value = remote.sources?.length ? remote.sources : sources.value
-        flowList.value = remote.flows?.length ? remote.flows : [remote.flow]
-        activeFlowId.value = remote.activeFlowId && flowList.value.some(item => item.id === remote.activeFlowId)
-          ? remote.activeFlowId : flowList.value[0].id
+        // 服务端方案可能来自旧版本：先走迁移（mdPath 默认值升级等）
+        const migrated = migrateShowFlowState(remote)
+        sources.value = migrated.sources?.length ? migrated.sources : sources.value
+        flowList.value = migrated.flows?.length ? migrated.flows : [migrated.flow]
+        activeFlowId.value = migrated.activeFlowId && flowList.value.some(item => item.id === migrated.activeFlowId)
+          ? migrated.activeFlowId : flowList.value[0].id
         saveShowFlowState(currentPersistence())
       }
       serverHydrated = true
