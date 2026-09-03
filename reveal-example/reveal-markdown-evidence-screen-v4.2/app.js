@@ -181,7 +181,7 @@ function enhanceSlides() {
   });
 }
 
-async function mount(markdown) {
+async function mount(markdown, options = {}) {
   if (loading) return;
   loading = true;
   try {
@@ -197,11 +197,13 @@ async function mount(markdown) {
     section.append(source);
     slides.append(section);
     deck = new Reveal(document.querySelector('.reveal'), {
-      /* 按视口 100% 填满整个屏幕：无外边距、无视口比例黑边 */
-      width:'100%', height:'100%', margin:0, center:false,
+      /* 固定 1600x900 设计画布：Reveal 按视口等比缩放（内容不挤压变形）；
+         margin 0 —— 16:9 屏幕上边缘贴边全屏 */
+      width:1600, height:900, margin:0, center:false,
       hash:false, transition:'fade', transitionSpeed:'fast',
       controls:true, progress:true, slideNumber:false,
-      keyboard:true, overview:true, plugins:[RevealMarkdown]
+      keyboard:true, overview:true, plugins:[RevealMarkdown],
+      ...options,
     });
     await deck.initialize();
     enhanceSlides();
@@ -273,16 +275,24 @@ document.addEventListener('keydown', event => {
   if (event.key.toLowerCase() === 'h') document.body.classList.toggle('clean');
 });
 (async () => {
-  const studioTheme = new URLSearchParams(location.search).get('studioTheme');
+  const params = new URLSearchParams(location.search);
+  const studioTheme = params.get('studioTheme');
   if (studioTheme) document.querySelector('#showflow-theme').href = `/api/studio/themes/${encodeURIComponent(studioTheme)}/files/theme.css`;
   let markdown = window.DEFAULT_MARKDOWN;
-  if (location.protocol !== 'file:') {
+  const inlineMd = params.get('md');
+  if (inlineMd) {
+    // 内联 markdown（模板选择缩略图 / 临时预览）：优先于文件加载
+    try { markdown = decodeURIComponent(inlineMd); } catch { markdown = window.DEFAULT_MARKDOWN; }
+  } else if (location.protocol !== 'file:') {
     try {
-      const response = await fetch(new URLSearchParams(location.search).get('studio') === 'draft' ? '/api/studio/slides/draft/raw' : 'slides.md', {cache:'no-store'});
+      const response = await fetch(params.get('studio') === 'draft' ? '/api/studio/slides/draft/raw' : 'slides.md', {cache:'no-store'});
       if (response.ok) markdown = await response.text();
     } catch { /* Offline default remains available. */ }
   }
-  await mount(markdown);
-  const studioPage = Number(new URLSearchParams(location.search).get('studioPage'));
+  const thumb = params.get('thumb') === '1';
+  await mount(markdown, {
+    controls: !thumb, progress: !thumb, overview: !thumb, keyboard: !thumb,
+  });
+  const studioPage = Number(params.get('studioPage'));
   if (Number.isInteger(studioPage) && studioPage >= 0) deck?.slide(studioPage);
 })();
