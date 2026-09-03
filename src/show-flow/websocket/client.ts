@@ -19,6 +19,8 @@ export class ShowFlowWsClient {
   private heartbeatTimer = 0
   private reconnectTimer = 0
   private closed = false
+  /** 重连退避：2s 起指数递增，上限 30s；连接成功后复位。避免被拒角色/服务端离线时的重连风暴 */
+  private reconnectDelay = 2000
 
   /** 各远端角色最近心跳时间（ms 时间戳） */
   lastSeenByRole = new Map<ShowFlowRole, number>()
@@ -38,6 +40,7 @@ export class ShowFlowWsClient {
       return
     }
     this.ws.onopen = () => {
+      this.reconnectDelay = 2000
       this.send({ type: 'HELLO', role: 'controller' })
       this.startHeartbeat()
     }
@@ -46,6 +49,10 @@ export class ShowFlowWsClient {
         const msg = JSON.parse(event.data) as ShowFlowMessage
         if (msg.type === 'PONG' && msg.role) this.lastSeenByRole.set(msg.role, Date.now())
         else if (msg.type === 'HELLO_ACK' && msg.role) this.lastSeenByRole.set(msg.role, Date.now())
+        // 角色被占（另一控制台存活）：拉长退避，避免 2s 一次的重连风暴；服务端僵尸接管后仍会自动恢复
+        if (msg.type === 'ERROR' && msg.code === 'ROLE_TAKEN') {
+          this.reconnectDelay = Math.max(this.reconnectDelay, 10000)
+        }
         this.handlers.onMessage(msg)
       }
       catch { /* 忽略非 JSON 帧 */ }
@@ -60,10 +67,12 @@ export class ShowFlowWsClient {
 
   private scheduleReconnect() {
     if (this.reconnectTimer) return
+    const delay = this.reconnectDelay
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = 0
       this.connect()
-    }, 2000)
+    }, delay)
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000)
   }
 
   private startHeartbeat() {

@@ -161,6 +161,7 @@
   function connect() {
     try { state.ws = new WebSocket(wsUrl()); } catch (e) { return retry(); }
     state.ws.onopen = function () {
+      state.retryDelay = 2000;
       state.connected = true;
       send({ type: 'HELLO', role: 'secondary', meta: { screen: 'reveal-md', url: location.pathname } });
       startHeartbeat();
@@ -169,6 +170,7 @@
       var msg;
       try { msg = JSON.parse(event.data); } catch (e) { return; }
       if (msg.type === 'HELLO_ACK') { state.sessionId = msg.sessionId || null; return; }
+      if (msg.type === 'ERROR' && msg.code === 'ROLE_TAKEN') { state.retryDelay = Math.max(state.retryDelay || 2000, 10000); return; }
       if (msg.type === 'PING') { send({ type: 'PONG' }); return; }
       if (msg.type === 'SYNC_STATE') { state.sessionId = msg.sessionId || state.sessionId; handleCommand(msg); return; }
       if (msg.type === 'NAVIGATE') { handleCommand(msg); return; }
@@ -176,7 +178,8 @@
     state.ws.onclose = function () { state.connected = false; stopHeartbeat(); retry(); };
     state.ws.onerror = function () { try { state.ws.close(); } catch (e) {} };
   }
-  function retry() { setTimeout(connect, 2000); }
+  /* 重连退避：2s 起指数递增至 30s，避免重连风暴刷屏 */
+  function retry() { setTimeout(connect, state.retryDelay || 2000); state.retryDelay = Math.min((state.retryDelay || 2000) * 2, 30000); }
 
   var hbTimer = null;
   function startHeartbeat() { stopHeartbeat(); hbTimer = setInterval(function () { send({ type: 'PING' }); }, 2000); }

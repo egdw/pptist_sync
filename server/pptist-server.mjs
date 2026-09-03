@@ -517,8 +517,15 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
-    // 副屏 Reveal / Markdown 演示页（静态托管）
-    if (pathname === '/reveal' || pathname.startsWith('/reveal/')) {
+    // 副屏 Reveal / Markdown 演示页（静态托管）。
+    // /reveal 必须正向重定向到 /reveal/：目录下脚本均为相对路径引用（vendor/...），
+    // 无尾斜杠时会被解析到站点根 /vendor/... 404，整页瘫痪
+    if (pathname === '/reveal') {
+      res.writeHead(301, { Location: '/reveal/' })
+      res.end()
+      return
+    }
+    if (pathname.startsWith('/reveal/')) {
       await serveStatic(req, res, pathname.replace(/^\/reveal/, '') || '/', REVEAL_DIR)
       return
     }

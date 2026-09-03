@@ -149,6 +149,7 @@ const connect = () => {
     return
   }
   ws.onopen = () => {
+    reconnectDelay = 2000
     wsConnected.value = true
     send({ type: 'HELLO', role: 'secondary', meta: { screen: 'pptist-remote', url: location.pathname } })
   }
@@ -168,12 +169,16 @@ const connect = () => {
   ws.onerror = () => ws?.close()
 }
 
+/** 重连退避：2s 起指数递增至 30s，避免服务端离线时的重连风暴 */
+let reconnectDelay = 2000
 const scheduleReconnect = () => {
   if (reconnectTimer || syncStopped) return
+  const delay = reconnectDelay
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = 0
     connect()
-  }, 2000)
+  }, delay)
+  reconnectDelay = Math.min(reconnectDelay * 2, 30000)
 }
 
 client = new SecondaryShowFlowClient({

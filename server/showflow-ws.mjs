@@ -59,7 +59,8 @@ export function attachShowFlowWs(server, log = () => {}) {
   wss.on('connection', (ws, req) => {
     const peer = `${req.socket.remoteAddress}:${req.socket.remotePort}`
     clients.set(ws, { role: null })
-    log(`[showflow-ws] 连接 ${peer}`)
+    // 注意：不打印每次"连接"日志 —— 未获准角色的客户端会按退避间隔反复重连，
+    // 逐连接打印会刷屏；注册与断开日志已足够定位问题
 
     ws.on('message', async raw => {
       let msg
