@@ -155,3 +155,8 @@ html.showflow-jump .slide-item {
   transition: none !important;
   animation: none !important;
 }
+
+/* ShowFlow 联动模式：手动翻页由虚拟步骤接管，隐藏左下角 ‹ › 按钮（页码等保留） */
+html.showflow-active .tools-left {
+  display: none !important;
+}

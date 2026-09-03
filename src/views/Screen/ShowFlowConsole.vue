@@ -97,7 +97,7 @@ onMounted(() => {
 onUnmounted(() => { if (monitorTimer) clearTimeout(monitorTimer) })
 watch(() => showFlowStore.snapshot, () => {
   // 每个虚拟步骤应用后上传最新主屏画面
-  window.setTimeout(scheduleMonitorUpload, 250)
+  window.setTimeout(scheduleMonitorUpload, 700)
 })
 
 const currentStep = computed<ShowStep | null>(() => flow.value.steps[currentStepIndex.value] ?? null)
@@ -151,6 +151,11 @@ const exitFlow = () => {
   showFlowStore.setEnabled(false)
   message.success('已退出多屏联动，恢复普通放映模式')
 }
+
+// 联动模式下隐藏主屏左下角手动‹›按钮（翻页由虚拟步骤接管，控制台底部已有 ‹/›）
+watch(() => flow.value.enabled, enabled => {
+  document.documentElement.classList.toggle('showflow-active', enabled)
+}, { immediate: true })
 
 // 中途关闭联动时收起控制台
 watch(() => flow.value.enabled, enabled => {

@@ -5,20 +5,48 @@
  * 上传到 /monitor-api/screen/{main|secondary}；服务端合成 1280×800
  * （主屏左 640×800 + 副屏右 640×800，叠加当前页/总页角标）并提供
  * HTTP 下载(/monitor-api/display) 与 MQTT 消息（结构与 LED 四屏协议一致）。
+ *
+ * 实时性优先：切换页面永远优先于截图——截图延迟执行、进行中只保留最新一帧，
+ * html-to-image 用 pixelRatio 1 控制耗时，绝不阻塞切页。
  */
 import { toPng } from 'html-to-image'
 
 const FALLBACK_TOPIC = 'presentation/led/display'
 
-/** 截取元素画面并按角色上传合成；成功后主屏侧会按服务端返回的 topic 发布 MQTT */
+let capturing = false
+let pendingRequest: { role: 'main' | 'secondary'; el: Element; page: number; total: number } | null = null
+
 export async function captureAndUploadHalf(
   role: 'main' | 'secondary',
   el: Element,
   page: number,
   total: number,
 ): Promise<boolean> {
+  if (capturing) {
+    // 正在截图中：只记下最新一帧请求，当前完成后补拍一次
+    pendingRequest = { role, el, page, total }
+    return true
+  }
+  capturing = true
   try {
-    const dataUrl = await toPng(el as HTMLElement, { pixelRatio: 1.2 })
+    return await doCapture(role, el, page, total)
+  }
+  finally {
+    capturing = false
+    const next = pendingRequest
+    pendingRequest = null
+    if (next) void captureAndUploadHalf(next.role, next.el, next.page, next.total)
+  }
+}
+
+async function doCapture(
+  role: 'main' | 'secondary',
+  el: Element,
+  page: number,
+  total: number,
+): Promise<boolean> {
+  try {
+    const dataUrl = await toPng(el as HTMLElement, { pixelRatio: 1 })
     const response = await fetch(`/monitor-api/screen/${role}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -329,9 +329,8 @@ export class ShowFlowController {
     if (msg.type === 'ACK' && msg.commandId) {
       const pending = this.pendingAcks.get(msg.commandId)
       if (pending) {
-        // 幂等：重复 ACK 直接忽略（清理后查不到）
+        // 幂等：重复 ACK 直接忽略（清理后查不到）；正常确认静默处理，不弹提示打扰放映
         ;(pending as PendingAck & { cleanup?: (r: boolean) => void }).cleanup?.(true)
-        this.callbacks.onNotice('副屏已确认', 'success')
       }
       return
     }
