@@ -279,8 +279,9 @@ export default () => {
     }
   }
 
-  // 快捷键翻页
+  // 快捷键翻页（过滤按住不放的重复事件，避免连续触发多次）
   const keydownListener = throttle(function(e: KeyboardEvent) {
+    if (e.repeat) return
     const key = e.key.toUpperCase()
 
     if (key === KEYS.UP || key === KEYS.LEFT || key === KEYS.PAGEUP) execPrev()

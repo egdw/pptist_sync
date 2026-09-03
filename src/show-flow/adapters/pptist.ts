@@ -37,8 +37,11 @@ export class PptistScreenAdapter implements ScreenAdapter {
     }
 
     slidesStore.updateSlideIndex(index)
+    // 联动跳页直接切换：临时禁用滑动过渡，避免跨页跳转时页面来回滑动
+    document.documentElement.classList.add('showflow-jump')
     await nextTick()
     await raf()
+    document.documentElement.classList.remove('showflow-jump')
     this.currentPageId = pageId
   }
 

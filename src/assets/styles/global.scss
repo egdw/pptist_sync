@@ -150,3 +150,8 @@ textarea {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+/* ShowFlow 联动跳页：虚拟步骤切换主屏页面时直接硬切，不播放滑动过渡 */
+html.showflow-jump .slide-item {
+  transition: none !important;
+  animation: none !important;
+}
