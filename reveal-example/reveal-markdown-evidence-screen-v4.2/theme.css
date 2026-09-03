@@ -181,7 +181,7 @@ body {
 .collab-item.active { opacity:1; border-color:rgba(40,200,255,.45); background:linear-gradient(135deg,rgba(12,64,108,.88),rgba(7,39,70,.86)); }
 .collab-item img { display:block; width:54px; height:72px; object-fit:contain; object-position:center top; margin:0 auto; align-self:center; filter:drop-shadow(0 0 7px rgba(40,200,255,.16)); }
 .collab-item strong { display:block; color:#eaf7ff; font-size:19px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.collab-item span { display:block; margin-top:6px; .collab-item span { display:block; margin-top:6px; color:#b9d3e4; font-size:20px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.collab-item span { display:block; margin-top:6px; color:#b9d3e4; font-size:20px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .collab-item > i { position:absolute; top:7px; right:8px; width:7px; height:7px; border-radius:50%; background:#65869e; }
 .collab-item.active > i { background:var(--green); box-shadow:0 0 9px var(--green); }
 
