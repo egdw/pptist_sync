@@ -40,6 +40,8 @@ export interface UploadResult extends DefaultPptMeta {
 }
 
 const API_BASE = '/default-ppt-api'
+/** 副屏文稿（PPTist B）独立存储槽位：接口结构与主屏一致，数据互相独立 */
+const SECONDARY_API_BASE = '/showflow-api/secondary-doc'
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', ...options })
@@ -71,6 +73,38 @@ export async function fetchDefaultPptSlides(): Promise<{ bundle: DefaultPptBundl
   return { bundle, version, seq }
 }
 
+// ---------- 副屏文稿（PPTist B）槽位：与主屏接口结构一致、存储互相独立 ----------
+
+export function fetchSecondaryDocCurrent(): Promise<DefaultPptMeta> {
+  return requestJson(`${SECONDARY_API_BASE}/current`)
+}
+
+export async function fetchSecondaryDocSlides(): Promise<{ bundle: DefaultPptBundle; version: string; seq: number }> {
+  const response = await fetch(`${SECONDARY_API_BASE}/current/slides`, { cache: 'no-store' })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error((data && (data as { error?: string }).error) || `获取副屏文稿失败（${response.status}）`)
+  }
+  const bundle = await response.json() as DefaultPptBundle
+  const version = response.headers.get('X-PPTist-Version') || ''
+  const seq = Number((version.match(/^v(\d+)$/) || [])[1] || 0)
+  return { bundle, version, seq }
+}
+
+export function subscribeSecondaryDocEvents(handlers: DefaultPptEventHandlers): () => void {
+  const source = new EventSource(`${SECONDARY_API_BASE}/events`)
+  source.addEventListener('version', event => {
+    try {
+      handlers.onVersion(JSON.parse((event as MessageEvent).data))
+    }
+    catch {
+      /* 忽略无法解析的通知 */
+    }
+  })
+  source.onopen = () => handlers.onOpen?.()
+  return () => source.close()
+}
+
 /**
  * 上传并设为默认：二进制信封 v2 请求体
  *   [4 字节头长度][4 字节 bundle 长度][头部 JSON{filename,pageCount}][bundle 字节][原始文件字节]
@@ -82,6 +116,7 @@ export async function fetchDefaultPptSlides(): Promise<{ bundle: DefaultPptBundl
 export function uploadDefaultPpt(
   payload: { filename: string; file: File; pageCount: number; bundleParts: BlobPart[] },
   onProgress?: (percent: number) => void,
+  slot: 'main' | 'secondary' = 'main',
 ): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const bundleBlob = new Blob(payload.bundleParts)
@@ -97,7 +132,7 @@ export function uploadDefaultPpt(
     envelopeParts.push(headerLen, bundleLen, headerBytes, bundleBlob, payload.file)
 
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `${API_BASE}/upload`)
+    xhr.open('POST', `${slot === 'secondary' ? SECONDARY_API_BASE : API_BASE}/upload`)
     xhr.setRequestHeader('Content-Type', 'application/octet-stream')
     xhr.upload.onprogress = event => {
       if (event.lengthComputable && onProgress) {

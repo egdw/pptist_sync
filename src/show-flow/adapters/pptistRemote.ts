@@ -8,7 +8,7 @@
  */
 import type { PageManifest, ScreenAdapter, ScreenRole } from '../types'
 import { buildPptistManifest } from '../manifest'
-import { fetchDefaultPptSlides } from '@/services/defaultPpt'
+import { fetchSecondaryDocSlides } from '@/services/defaultPpt'
 import type { ShowFlowTransport } from './reveal'
 
 export class PptistRemoteScreenAdapter implements ScreenAdapter {
@@ -24,7 +24,7 @@ export class PptistRemoteScreenAdapter implements ScreenAdapter {
 
   async getManifest(): Promise<PageManifest[]> {
     if (this.cache) return this.cache.manifest
-    const { bundle, version } = await fetchDefaultPptSlides()
+    const { bundle, version } = await fetchSecondaryDocSlides()
     this.cache = {
       version: `${version}-${bundle.slides.length}`,
       manifest: buildPptistManifest(bundle.slides),

@@ -5,7 +5,7 @@
       <div class="placeholder-main">
         <div class="placeholder-icon"><i-icon-park-outline:ppt class="icon" /></div>
         <div class="placeholder-text">暂无副屏文稿</div>
-        <div class="placeholder-sub">请在主控电脑打开 /upload 页面上传 PPTist B 文稿，上传后本页自动更新</div>
+        <div class="placeholder-sub">这是副屏（PPTist B）独立文稿槽位，与主屏 PPT 完全独立。请在 /upload 页将上传目标切到「副屏文稿」上传，上传后本页自动更新</div>
       </div>
     </div>
     <BaseView v-else :changeViewMode="noop" />
@@ -23,9 +23,9 @@ import { nextTick } from 'vue'
 import { useSlidesStore } from '@/store'
 import {
   applyBundleToSlidesStore,
-  fetchDefaultPptCurrent,
-  fetchDefaultPptSlides,
-  subscribeDefaultPptEvents,
+  fetchSecondaryDocCurrent,
+  fetchSecondaryDocSlides,
+  subscribeSecondaryDocEvents,
   type DefaultPptMeta,
 } from '@/services/defaultPpt'
 import { SecondaryShowFlowClient } from '@/show-flow/secondaryClient'
@@ -53,7 +53,7 @@ async function syncLoop() {
   if (syncing || syncStopped) return
   syncing = true
   try {
-    const meta = latestNotice && latestNotice.exists ? latestNotice : await fetchDefaultPptCurrent()
+    const meta = latestNotice && latestNotice.exists ? latestNotice : await fetchSecondaryDocCurrent()
     if (!meta.exists) {
       if (phase.value === 'loading') phase.value = 'empty'
       return
@@ -62,7 +62,7 @@ async function syncLoop() {
       if (phase.value === 'loading') phase.value = 'playing'
       return
     }
-    const { bundle, seq } = await fetchDefaultPptSlides()
+    const { bundle, seq } = await fetchSecondaryDocSlides()
     if (seq <= loadedSeq.value) return
     applyBundleToSlidesStore(bundle)
     slidesStore.updateSlideIndex(0)
@@ -160,7 +160,7 @@ const statusText = computed(() => {
 const noop = () => {}
 
 onMounted(() => {
-  unsubscribe = subscribeDefaultPptEvents({ onVersion: handleVersionNotice })
+  unsubscribe = subscribeSecondaryDocEvents({ onVersion: handleVersionNotice })
   syncLoop()
   connect()
 })

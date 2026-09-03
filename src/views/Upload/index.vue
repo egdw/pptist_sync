@@ -15,6 +15,16 @@
       <div class="main">
         <div class="card">
           <div class="card-title">选择 PPTX 文件</div>
+          <div class="target-row">
+            <span class="target-label">上传目标：</span>
+            <button class="target-btn" :class="{ active: uploadTarget === 'main' }" @click="uploadTarget = 'main'">主屏文稿</button>
+            <button class="target-btn" :class="{ active: uploadTarget === 'secondary' }" @click="uploadTarget = 'secondary'">副屏文稿（PPTist B）</button>
+          </div>
+          <div class="target-tip">
+            {{ uploadTarget === 'secondary'
+              ? '副屏文稿与主屏 PPT 完全独立（页数、内容均可不同），供 /secondary 副屏播放页使用。'
+              : '主屏文稿用于编辑器与 /play 播放页。' }}
+          </div>
           <div
             class="drop-area"
             :class="{ dragging }"
@@ -47,9 +57,9 @@
           <div class="error-text" v-else-if="errorText">{{ errorText }}</div>
 
           <button class="primary-btn" :disabled="!canUpload" @click="upload()">
-            <i-icon-park-outline:upload class="btn-icon" /> {{ uploading ? '上传中 ...' : '上传并设为默认' }}
+            <i-icon-park-outline:upload class="btn-icon" /> {{ uploading ? '上传中 ...' : (uploadTarget === 'secondary' ? '上传并设为副屏文稿' : '上传并设为默认') }}
           </button>
-          <div class="btn-tip">上传成功后将替换当前默认 PPT，已打开的播放页面会自动切换到新 PPT 的第一页。</div>
+          <div class="btn-tip">上传成功后将替换当前{{ uploadTarget === 'secondary' ? '副屏文稿' : '默认 PPT' }}，已打开的{{ uploadTarget === 'secondary' ? '副屏页' : '播放页面' }}会自动切换到新文稿的第一页。</div>
         </div>
 
         <div class="card" v-if="successText">
@@ -62,15 +72,27 @@
 
       <div class="side">
         <div class="card">
-          <div class="card-title">当前默认 PPT</div>
+          <div class="card-title">主屏文稿（默认 PPT）</div>
           <template v-if="currentMeta.exists">
             <div class="meta-row"><span class="meta-label">文件名</span><span class="meta-value">{{ currentMeta.filename }}</span></div>
             <div class="meta-row"><span class="meta-label">页数</span><span class="meta-value">{{ currentMeta.pageCount }}</span></div>
             <div class="meta-row"><span class="meta-label">更新时间</span><span class="meta-value">{{ formatTime(currentMeta.updatedAt) }}</span></div>
             <div class="meta-row"><span class="meta-label">版本</span><span class="meta-value">{{ currentMeta.version }}</span></div>
           </template>
-          <div class="empty-meta" v-else>暂无默认 PPT</div>
+          <div class="empty-meta" v-else>暂无主屏文稿</div>
           <a class="play-link" :href="playUrl" target="_blank"><i-icon-park-outline:play class="btn-icon" /> 打开播放页</a>
+        </div>
+
+        <div class="card">
+          <div class="card-title">副屏文稿（PPTist B）</div>
+          <template v-if="secondaryMeta.exists">
+            <div class="meta-row"><span class="meta-label">文件名</span><span class="meta-value">{{ secondaryMeta.filename }}</span></div>
+            <div class="meta-row"><span class="meta-label">页数</span><span class="meta-value">{{ secondaryMeta.pageCount }}</span></div>
+            <div class="meta-row"><span class="meta-label">更新时间</span><span class="meta-value">{{ formatTime(secondaryMeta.updatedAt) }}</span></div>
+            <div class="meta-row"><span class="meta-label">版本</span><span class="meta-value">{{ secondaryMeta.version }}</span></div>
+          </template>
+          <div class="empty-meta" v-else>暂无副屏文稿（与主屏完全独立）</div>
+          <a class="play-link" :href="secondaryUrl" target="_blank"><i-icon-park-outline:play class="btn-icon" /> 打开副屏页 /secondary</a>
         </div>
 
         <div class="card">
@@ -96,7 +118,9 @@ import useImport from '@/hooks/useImport'
 import {
   fetchDefaultPptConfig,
   fetchDefaultPptCurrent,
+  fetchSecondaryDocCurrent,
   subscribeDefaultPptEvents,
+  subscribeSecondaryDocEvents,
   uploadDefaultPpt,
   type DefaultPptBundle,
   type DefaultPptConfig,
@@ -115,6 +139,9 @@ const { importPPTXFile, exporting } = useImport()
 
 const config = ref<DefaultPptConfig>({ publicBaseUrl: null, maxUploadMB: 1024, acceptTypes: ['.pptx', '.pdf'] })
 const currentMeta = ref<DefaultPptMeta>({ exists: false })
+const secondaryMeta = ref<DefaultPptMeta>({ exists: false })
+// 上传目标槽位：主屏文稿（默认 PPT）或副屏文稿（PPTist B），两槽位存储互相独立
+const uploadTarget = ref<'main' | 'secondary'>('main')
 const selectedFile = ref<File | null>(null)
 const parsed = ref(false)
 const parsing = ref(false)
@@ -142,6 +169,10 @@ const uploadUrl = computed(() => {
 const playUrl = computed(() => {
   const base = (config.value.publicBaseUrl || window.location.origin).replace(/\/+$/, '')
   return `${base}/play`
+})
+const secondaryUrl = computed(() => {
+  const base = (config.value.publicBaseUrl || window.location.origin).replace(/\/+$/, '')
+  return `${base}/secondary/`
 })
 
 const progressVisible = computed(() => uploading.value || parsing.value)
@@ -338,10 +369,13 @@ const upload = async () => {
       file: selectedFile.value,
       pageCount: parsedPageCount.value,
       bundleParts: parsedBundleParts.value,
-    }, percent => (progressPercent.value = percent))
-    successText.value = '已设为默认 PPT，更新通知已发送。播放页面加载完成后将自动切换。'
+    }, percent => (progressPercent.value = percent), uploadTarget.value)
+    successText.value = uploadTarget.value === 'secondary'
+      ? '已设为副屏文稿（PPTist B），副屏页加载完成后将自动切换。'
+      : '已设为默认 PPT，更新通知已发送。播放页面加载完成后将自动切换。'
     statusText.value = ''
-    currentMeta.value = result
+    if (uploadTarget.value === 'secondary') secondaryMeta.value = result
+    else currentMeta.value = result
   }
   catch (error) {
     // 失败不影响旧默认 PPT，也不影响正在播放的页面
@@ -379,11 +413,23 @@ onMounted(async () => {
   catch {
     /* 忽略，展示为暂无 */
   }
+  try {
+    secondaryMeta.value = await fetchSecondaryDocCurrent()
+  }
+  catch {
+    /* 忽略，展示为暂无 */
+  }
   unsubscribe = subscribeDefaultPptEvents({
     onVersion: meta => {
       if (meta.exists) currentMeta.value = meta
     },
   })
+  const unsubscribeSecondary = subscribeSecondaryDocEvents({
+    onVersion: meta => {
+      if (meta.exists) secondaryMeta.value = meta
+    },
+  })
+  onUnmounted(() => unsubscribeSecondary())
 })
 
 onUnmounted(() => unsubscribe?.())
@@ -463,6 +509,40 @@ onUnmounted(() => unsubscribe?.())
     font-weight: 700;
     margin-bottom: 14px;
   }
+}
+.target-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+
+  .target-label {
+    font-size: 13px;
+    color: #666;
+    flex-shrink: 0;
+  }
+  .target-btn {
+    border: 1px solid $borderColor;
+    background: #fff;
+    border-radius: $borderRadius;
+    font-size: 13px;
+    padding: 5px 12px;
+    cursor: pointer;
+    color: #666;
+    transition: all .2s;
+
+    &:hover { border-color: $themeColor; color: $themeColor; }
+    &.active {
+      border-color: $themeColor;
+      background: $themeColor;
+      color: #fff;
+    }
+  }
+}
+.target-tip {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 12px;
 }
 .drop-area {
   border: 1px dashed #c9cdd4;

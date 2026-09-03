@@ -55,7 +55,7 @@
         <span class="meta">副屏页地址：/reveal/</span>
       </template>
       <template v-else>
-        <span class="meta">文档来源：服务端当前上传文稿（/upload 管理上传），副屏页地址：/secondary/</span>
+        <span class="meta">文档来源：服务端「副屏文稿」槽位（/upload 页选择「副屏文稿（PPTist B）」上传），与主屏完全独立；副屏页地址：/secondary/</span>
       </template>
       <span v-if="secondaryManifestError" class="error">{{ secondaryManifestError }}</span>
       <span v-else class="meta">共 {{ secondaryManifest.length }} 页</span>
@@ -161,7 +161,7 @@
         </div>
         <div class="pool-tip">
           {{ secondarySource?.kind === 'pptist-remote'
-            ? '页 id 为文稿的永久 slideId；重新上传文稿后点「刷新副屏清单」自动对账'
+            ? '页 id 为副屏文稿的永久 slideId；在 /upload 重新上传「副屏文稿」后点「刷新副屏清单」自动对账'
             : '页 id 来自 data-page-id（未标注时按内容稳定 hash 生成，建议显式标注）' }}
         </div>
       </section>

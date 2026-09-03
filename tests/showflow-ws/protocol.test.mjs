@@ -1,5 +1,8 @@
 /**
- * ShowFlow WS 协议端到端自测：
+ * ShowFlow WS 协议端到端自测（自建自停服务器）：
+ *   npm run test:showflow:ws
+ *
+ * 覆盖：
  * 1. HELLO 注册 + 角色拒绝（重复 controller）
  * 2. controller -> secondary NAVIGATE 路由
  * 3. secondary ACK 回路由
@@ -7,14 +10,36 @@
  * 5. 幂等：同 commandId 重复 NAVIGATE 由客户端去重（此处仅验证路由层转发）
  * 6. 副屏重连 -> controller 收到 HELLO 通知（触发 SYNC_STATE）
  */
+import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import WebSocket from 'ws'
 
-const URL = 'ws://127.0.0.1:8799/showflow'
+const PORT = 8797
+const URL = `ws://127.0.0.1:${PORT}/showflow`
+const dataMain = mkdtempSync(path.join(tmpdir(), 'pptist-ws-main-'))
+const dataSecondary = mkdtempSync(path.join(tmpdir(), 'pptist-ws-secondary-'))
+const distTmp = mkdtempSync(path.join(tmpdir(), 'pptist-ws-dist-'))
+
 const log = (...a) => console.log('[test]', ...a)
 let pass = 0, fail = 0
 const ok = (cond, name) => { if (cond) { pass++; log('✓', name) } else { fail++; log('✗ FAIL:', name) } }
 
 const wait = ms => new Promise(r => setTimeout(r, ms))
+
+const server = spawn(process.execPath, [path.resolve('server/pptist-server.mjs')], {
+  env: {
+    ...process.env,
+    PPTIST_PORT: String(PORT),
+    PPTIST_REMOTE_API: '',
+    PPTIST_DATA_DIR: dataMain,
+    PPTIST_SECONDARY_DATA_DIR: dataSecondary,
+    PPTIST_DIST_DIR: distTmp,
+  },
+  stdio: ['ignore', 'ignore', 'pipe'],
+})
+server.stderr.on('data', c => process.stdout.write(`  [err] ${c}`))
 
 class Client {
   constructor(name) {
@@ -42,6 +67,17 @@ class Client {
 }
 
 const main = async () => {
+  // 等待服务器就绪
+  for (let i = 0; i < 40; i++) {
+    const ready = await new Promise(resolve => {
+      const probe = new WebSocket(URL)
+      probe.on('open', () => { probe.close(); resolve(true) })
+      probe.on('error', () => resolve(false))
+    })
+    if (ready) break
+    await wait(250)
+  }
+
   // 1. controller 注册
   const controller = new Client('controller')
   await controller.opened
@@ -114,8 +150,16 @@ const main = async () => {
   secondary2.close()
   anon.close()
   await wait(200)
+  server.kill()
+  rmSync(dataMain, { recursive: true, force: true })
+  rmSync(dataSecondary, { recursive: true, force: true })
+  rmSync(distTmp, { recursive: true, force: true })
   log(`\n结果: ${pass} 通过, ${fail} 失败`)
   process.exit(fail ? 1 : 0)
 }
 
-main().catch(err => { console.error(err); process.exit(1) })
+main().catch(err => {
+  server.kill()
+  console.error(err)
+  process.exit(1)
+})
