@@ -33,7 +33,7 @@ body {
   clip-path:polygon(2% 0,42% 0,44% 1.5%,94% 1.5%,96% 0,100% 0,100% 95%,98% 98%,72% 98%,70% 100%,2% 100%,0 97%,0 4%);
 }
 .reveal .slides > section::after {
-  left:340px; right:340px; top:78px; height:1px;
+  left:190px; right:190px; top:82px; height:1px;
   background:linear-gradient(90deg,transparent,var(--cyan),transparent); opacity:.34;
 }
 .reveal h1 { font-size:56px; line-height:1.18; font-weight:700; letter-spacing:-1.2px; margin:0; text-shadow:0 0 18px rgba(40,200,255,.13); }
@@ -65,17 +65,17 @@ body {
 .live-cue strong { color:#ffe0af; font-size:19px; font-weight:550; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .live-cue.pulse { animation:cuePulse .8s ease-out; }
 
-.headline { position:relative; z-index:2; margin:0 300px 20px; text-align:center; min-height:102px; }
+.headline { position:relative; z-index:2; margin:0 150px 22px; text-align:center; min-height:102px; }
 .headline p { margin-top:9px; color:#b7cee2; font-size:25px; }
 
 /* Dynamic multi-role layout. */
 .work-layout {
   position:relative; z-index:2; display:grid; gap:20px; align-items:stretch;
-  height:505px; width:100%;
+  height:505px; width:100%; margin-top:-14px;
 }
 .work-layout.roles-1,.work-layout.roles-2 { grid-template-columns:245px minmax(0,1fr) 1px; }
 .work-layout.roles-3,.work-layout.roles-4 { grid-template-columns:235px minmax(0,1fr) 235px; }
-.role-side { display:grid; gap:14px; align-content:center; min-width:0; padding-bottom:30px; }
+.role-side { display:grid; gap:14px; align-content:center; min-width:0; padding-bottom:46px; }
 .role-side:empty { visibility:hidden; }
 .roles-2 .role-side-left,.roles-4 .role-side-left,.roles-4 .role-side-right { grid-template-rows:1fr 1fr; align-content:stretch; }
 .roles-3 .role-side-left { grid-template-rows:1fr 1fr; align-content:stretch; }
