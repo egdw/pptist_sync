@@ -39,6 +39,20 @@
 
    Docker 部署与数据持久化、环境变量（`PPTIST_PORT`、`PPTIST_DATA_DIR`、`PPTIST_PUBLIC_URL` 等）见 [doc/remote-default-ppt.md](/doc/remote-default-ppt.md)。
 
+## RK3588 安全升级（保留现场数据）
+
+Windows 端双击 [`一键打包-RK3588.cmd`](/一键打包-RK3588.cmd)，或执行 `npm run package:rk3588`，可生成 `deploy/pptist-rk3588-lcd-deploy.tar.gz`。
+
+对已部署的板子，请不要直接把空的 `data/` 目录覆盖到旧目录。将新包解压到旧安装目录之外，然后执行：
+
+```bash
+mkdir -p ~/pptist-update
+tar -xzf pptist-rk3588-lcd-deploy.tar.gz -C ~/pptist-update
+bash ~/pptist-update/pptist-rk3588-lcd-deploy/upgrade-safe.sh ~/pptist
+```
+
+`upgrade-safe.sh` 仅同步 `dist/`、`server/`、`reveal-example/`、运行时和启动脚本等程序文件，绝不覆盖或删除旧服务器的 `data/` 与 `config.env`。因此主/副屏文稿、ShowFlow 方案、Studio 草稿/版本、主题、照片、素材、MQTT 配置和服务器参数都会保留；升级前配置副本位于 `~/pptist/backups/`。详情见 [部署说明](/deploy/pptist/部署说明.md)。
+
 # ✨ 项目特色
 1. 易开发：基于 Vue3.x + TypeScript 构建，不依赖UI组件库，样式定制更轻松、功能扩展更方便；
 2. 易使用：随处可见的右键菜单、数十种快捷操作方式、持续深入打磨编辑细节，力求还原桌面应用级的交互体验；

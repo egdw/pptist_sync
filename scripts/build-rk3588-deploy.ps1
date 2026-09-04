@@ -1,5 +1,6 @@
 param(
-  [string]$OutputName = "pptist-rk3588-lcd-deploy"
+  [string]$OutputName = "pptist-rk3588-lcd-deploy",
+  [switch]$SkipFrontendBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,13 +9,21 @@ $DeployRoot = Join-Path $ProjectRoot "deploy"
 $StageDir = Join-Path $DeployRoot $OutputName
 $ArchivePath = Join-Path $DeployRoot "$OutputName.tar.gz"
 
-if (-not $StageDir.StartsWith($DeployRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-  throw "Unsafe output path: $StageDir"
+if ([string]::IsNullOrWhiteSpace($OutputName) -or $OutputName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+  throw "OutputName must contain only letters, numbers, dot, underscore, or hyphen."
 }
 
-Write-Host "[1/6] Building frontend..." -ForegroundColor Cyan
-Push-Location $ProjectRoot
-try { npm run build-only } finally { Pop-Location }
+if ($SkipFrontendBuild) {
+  if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot "dist\index.html"))) {
+    throw "Cannot skip frontend build: dist/index.html does not exist."
+  }
+  Write-Host "[1/6] Reusing existing frontend dist..." -ForegroundColor Cyan
+}
+else {
+  Write-Host "[1/6] Building frontend..." -ForegroundColor Cyan
+  Push-Location $ProjectRoot
+  try { npm run build-only } finally { Pop-Location }
+}
 
 Write-Host "[2/6] Creating clean staging directory..." -ForegroundColor Cyan
 if (Test-Path -LiteralPath $StageDir) { Remove-Item -LiteralPath $StageDir -Recurse -Force }
@@ -32,12 +41,14 @@ Copy-Item -Force (Join-Path $DeployRoot "pptist\stop-pptist.sh") $StageDir
 Copy-Item -Force (Join-Path $DeployRoot "pptist\service-run.sh") $StageDir
 Copy-Item -Force (Join-Path $DeployRoot "pptist\enable-boot-service.sh") $StageDir
 Copy-Item -Force (Join-Path $DeployRoot "pptist\disable-boot-service.sh") $StageDir
+Copy-Item -Force (Join-Path $DeployRoot "pptist\upgrade-safe.sh") $StageDir
 $DeployReadme = Get-ChildItem -LiteralPath (Join-Path $DeployRoot "pptist") -Filter "*.md" | Select-Object -First 1
 if ($DeployReadme) { Copy-Item -Force $DeployReadme.FullName $StageDir }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "src\assets\fonts") | Out-Null
 Copy-Item -Force (Join-Path $ProjectRoot "src\assets\fonts\MiSans.woff2") (Join-Path $StageDir "src\assets\fonts\MiSans.woff2")
 New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "data\default-ppt\versions"), (Join-Path $StageDir "data\secondary-ppt\versions"), (Join-Path $StageDir "data\led-cache"), (Join-Path $StageDir "data\led-assets\portraits") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "data\studio\draft"), (Join-Path $StageDir "data\studio\active"), (Join-Path $StageDir "data\studio\versions"), (Join-Path $StageDir "data\studio\themes"), (Join-Path $StageDir "data\studio\lcd-themes"), (Join-Path $StageDir "data\studio\assets") | Out-Null
 
 Write-Host "[3/6] Adding offline Node.js ARM64 runtime..." -ForegroundColor Cyan
 $RuntimeSource = Get-ChildItem -LiteralPath (Join-Path $DeployRoot "pptist\runtime") -Filter "node-v*-linux-arm64.tar.xz" | Select-Object -First 1

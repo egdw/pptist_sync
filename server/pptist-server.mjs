@@ -42,6 +42,7 @@ import { attachShowFlowWs } from './showflow-ws.mjs'
 import { createLedRenderService } from './led/render-service.mjs'
 import { createStudioService } from './studio-service.mjs'
 import { createMonitorService } from './monitor-service.mjs'
+import { createMonitorMqttPublisher } from './monitor-mqtt-publisher.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -64,6 +65,7 @@ const studioService = createStudioService({ rootDir: ROOT, revealDir: REVEAL_DIR
 // 双 PPT 合成监控：主屏(左 640×800) + 副屏(右 640×800) → 1280×800，联动放映时自动更新
 const MONITOR_MQTT_TOPIC = process.env.PPTIST_MONITOR_MQTT_TOPIC || 'presentation/led/display'
 const monitorService = createMonitorService({ cacheDir: path.join(ROOT, 'data', 'monitor') })
+const monitorPublisher = createMonitorMqttPublisher({ topic: MONITOR_MQTT_TOPIC, log })
 let getShowFlowWsStatus = () => ({ totalConnections: 0, checkedAt: Date.now(), roles: {} })
 
 const MIME = {
@@ -535,6 +537,7 @@ const server = http.createServer(async (req, res) => {
         if (!body.config?.mqtt || !body.config?.ws) { sendJson(res, 400, { error: '无效的放映联动配置' }); return }
         await fsp.mkdir(path.dirname(PRESENTATION_LINK_CONFIG_FILE), { recursive: true })
         await atomicWrite(PRESENTATION_LINK_CONFIG_FILE, JSON.stringify(body.config, null, 2))
+        monitorPublisher.applyConfig(body.config)
         sendJson(res, 200, { ok: true }); return
       }
       sendJson(res, 405, { error: 'Method Not Allowed' }); return
@@ -613,22 +616,38 @@ const server = http.createServer(async (req, res) => {
       const monitorRoleMatch = pathname.match(/^\/monitor-api\/screen\/(main|secondary)$/)
       if (monitorRoleMatch && req.method === 'POST') {
         const body = JSON.parse((await readRawBody(req, 8 * 1024 * 1024)).toString('utf8') || '{}')
-        const status = await monitorService.applyHalf(monitorRoleMatch[1], body)
+        const snapshot = await monitorService.applyHalf(monitorRoleMatch[1], body)
+        const origin = PUBLIC_URL || `${req.socket.encrypted ? 'https' : 'http'}://${req.headers.host || `localhost:${PORT}`}`
+        const imageUrl = `${origin}/monitor-api/display/${snapshot.revision}.jpg`
+        monitorPublisher.publish({
+          protocol: 'led-display/1.0', type: 'display', msg_id: `monitor-${snapshot.revision}`,
+          revision: snapshot.revision, role: 'dual',
+          image: { url: imageUrl, format: 'jpeg', width: 1280, height: 800, sha256: snapshot.sha256 },
+          mainPage: snapshot.mainPage || undefined, secondaryPage: snapshot.secondaryPage || undefined,
+        })
         sendJson(res, 200, {
-          ok: true, revision: status.revision, url: '/monitor-api/display',
-          mqttTopic: MONITOR_MQTT_TOPIC, width: status.width, height: status.height,
-          sha256: status.sha256, mainPage: status.mainPage, secondaryPage: status.secondaryPage,
+          ok: true, revision: snapshot.revision, url: `/monitor-api/display/${snapshot.revision}.jpg`,
+          mqttTopic: MONITOR_MQTT_TOPIC, width: 1280, height: 800,
+          sha256: snapshot.sha256, mainPage: snapshot.mainPage, secondaryPage: snapshot.secondaryPage,
         })
         return
       }
+      const monitorImageMatch = pathname.match(/^\/monitor-api\/display\/(\d+)\.jpg$/)
+      if (monitorImageMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+        const target = await monitorService.displayJpeg(Number(monitorImageMatch[1]))
+        if (!target) { sendJson(res, 404, { error: '该 revision 已过期或不存在' }); return }
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': target.length, 'Cache-Control': 'public, max-age=86400, immutable', 'ETag': `"monitor-${monitorImageMatch[1]}"` })
+        if (req.method === 'HEAD') res.end(); else res.end(target)
+        return
+      }
       if (pathname === '/monitor-api/display' && (req.method === 'GET' || req.method === 'HEAD')) {
-        const jpeg = monitorService.displayJpeg()
+        const jpeg = await monitorService.displayJpeg()
         if (!jpeg) { sendJson(res, 404, { error: '尚无合成画面（等待联动放映）' }); return }
         res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': jpeg.length, 'Cache-Control': 'no-store' })
         res.end(jpeg)
         return
       }
-      if (pathname === '/monitor-api/status' && req.method === 'GET') { sendJson(res, 200, monitorService.status()); return }
+      if (pathname === '/monitor-api/status' && req.method === 'GET') { sendJson(res, 200, { ...monitorService.status(), mqtt: monitorPublisher.status() }); return }
       sendJson(res, 404, { error: '未知接口' })
       return
     }
@@ -794,6 +813,7 @@ const server = http.createServer(async (req, res) => {
 })
 
 await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init(), monitorService.init()])
+try { monitorPublisher.applyConfig(JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8'))) } catch { /* 尚未配置 MQTT */ }
 await Promise.all([mainDocStore.loadCurrent(), secondaryDocStore.loadCurrent()])
 const showFlowWs = attachShowFlowWs(server, log)
 getShowFlowWsStatus = showFlowWs.getStatus

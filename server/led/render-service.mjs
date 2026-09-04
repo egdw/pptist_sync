@@ -6,11 +6,12 @@ import { renderLedJpeg } from './renderer.mjs'
 
 export function createLedRenderService({ cacheDir, portraitDir, publicUrl = '' }) {
   let revision = 0
-  const render = async (state, requestOrigin = '') => {
+  let lastResult = null
+  const render = async (state, requestOrigin = '', theme = {}) => {
     const nextRevision = ++revision
     const screens = []
     await Promise.all(LED_ROLES.map(async role => {
-      const data = await renderLedJpeg(state, role, portraitDir)
+      const data = await renderLedJpeg(state, role, portraitDir, theme)
       const dir = path.join(cacheDir, role)
       await fsp.mkdir(dir, { recursive: true })
       const filename = `${nextRevision}.jpg`
@@ -26,7 +27,8 @@ export function createLedRenderService({ cacheDir, portraitDir, publicUrl = '' }
       })
     }))
     screens.sort((a, b) => LED_ROLES.indexOf(a.role) - LED_ROLES.indexOf(b.role))
+    lastResult = { revision: nextRevision, screens, renderedAt: Date.now() }
     return { revision: nextRevision, screens }
   }
-  return { render }
+  return { render, getStatus: () => lastResult }
 }

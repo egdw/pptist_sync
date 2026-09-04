@@ -4,11 +4,11 @@
  * 数据流：联动放映时，主屏/副屏播放窗口各自将当前页截图(dataURL)上传，
  * 每次任一半区更新都会重新合成（另一侧沿用最近一次画面），并叠加
  * 「当前页/总页」角标（主屏左上、副屏右上）。
- * 最新合成图常驻内存并落盘 cacheDir/display.jpg，HTTP 直接下载；
- * MQTT 发布由上传方（浏览器，复用放映联动的 MQTT 连接）按返回的 topic 完成，
- * 消息结构与 LED 四屏协议完全一致（led-display/1.0），便于板端复用解析。
+ * 最新合成图常驻内存并落盘；每次合成均保留以 revision 命名的不可变副本，
+ * 供 MQTT 消息中的 URL 与 SHA256 一一对应。MQTT 由服务端统一发布。
  */
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas'
@@ -24,6 +24,9 @@ export function createMonitorService({ cacheDir }) {
   let jpeg = null
   let sha256 = ''
   let updatedAt = null
+  const snapshots = new Map()
+  let chain = Promise.resolve()
+  const MAX_SNAPSHOTS = 96
 
   // 页码角标字体：使用部署包捆绑的 MiSans（server/assets/fonts/，仓库内为 src/assets/fonts/）
   for (const fontPath of [
@@ -86,15 +89,29 @@ export function createMonitorService({ cacheDir }) {
     ctx.shadowColor = 'transparent'
     ctx.shadowBlur = 0
 
-    jpeg = canvas.toBuffer('image/jpeg', 82)
-    sha256 = crypto.createHash('sha256').update(jpeg).digest('hex')
-    revision++
+    const nextJpeg = canvas.toBuffer('image/jpeg', 82)
+    const nextSha256 = crypto.createHash('sha256').update(nextJpeg).digest('hex')
+    const nextRevision = ++revision
     updatedAt = Date.now()
+    jpeg = nextJpeg
+    sha256 = nextSha256
+    const snapshot = {
+      revision: nextRevision, jpeg: nextJpeg, sha256: nextSha256, updatedAt,
+      mainPage: halves.main ? `${halves.main.page}/${halves.main.total}` : null,
+      secondaryPage: halves.secondary ? `${halves.secondary.page}/${halves.secondary.total}` : null,
+    }
+    snapshots.set(nextRevision, snapshot)
+    while (snapshots.size > MAX_SNAPSHOTS) snapshots.delete(snapshots.keys().next().value)
     try {
       await fsp.mkdir(cacheDir, { recursive: true })
-      await fsp.writeFile(path.join(cacheDir, 'display.jpg'), jpeg)
+      const target = path.join(cacheDir, `display-${nextRevision}.jpg`)
+      const temp = `${target}.${crypto.randomUUID()}.tmp`
+      await fsp.writeFile(temp, nextJpeg)
+      await fsp.rename(temp, target)
+      await fsp.writeFile(path.join(cacheDir, 'display.jpg'), nextJpeg)
     }
     catch { /* 内存中仍保留最新合成图 */ }
+    return snapshot
   }
 
   async function applyHalf(role, { image, page, total }) {
@@ -103,9 +120,13 @@ export function createMonitorService({ cacheDir }) {
     const comma = base64.indexOf(',')
     const buffer = Buffer.from(comma >= 0 ? base64.slice(comma + 1) : base64, 'base64')
     if (!buffer.length) throw new Error('画面数据为空')
-    halves[role] = { buffer, page: Math.max(1, Number(page) || 1), total: Math.max(1, Number(total) || 1) }
-    await composite()
-    return status()
+    const task = async () => {
+      halves[role] = { buffer, page: Math.max(1, Number(page) || 1), total: Math.max(1, Number(total) || 1) }
+      return composite()
+    }
+    const result = chain.then(task)
+    chain = result.catch(() => {})
+    return result
   }
 
   function status() {
@@ -115,13 +136,20 @@ export function createMonitorService({ cacheDir }) {
       width: WIDTH,
       height: HEIGHT,
       updatedAt,
-      url: '/monitor-api/display',
+      url: revision ? `/monitor-api/display/${revision}.jpg` : '/monitor-api/display',
       mainPage: halves.main ? `${halves.main.page}/${halves.main.total}` : null,
       secondaryPage: halves.secondary ? `${halves.secondary.page}/${halves.secondary.total}` : null,
     }
   }
 
-  function displayJpeg() { return jpeg }
+  async function displayJpeg(targetRevision = null) {
+    if (!targetRevision) return jpeg
+    const inMemory = snapshots.get(targetRevision)?.jpeg
+    if (inMemory) return inMemory
+    // 进程重启后，retain 的 MQTT 仍可能引用最近的 immutable URL；允许从磁盘恢复。
+    return fsp.readFile(path.join(cacheDir, `display-${targetRevision}.jpg`)).catch(() => null)
+  }
+  function snapshot(targetRevision) { return snapshots.get(targetRevision) || null }
 
   async function init() {
     await fsp.mkdir(cacheDir, { recursive: true })
@@ -133,5 +161,5 @@ export function createMonitorService({ cacheDir }) {
     }
   }
 
-  return { init, applyHalf, status, displayJpeg }
+  return { init, applyHalf, status, displayJpeg, snapshot }
 }

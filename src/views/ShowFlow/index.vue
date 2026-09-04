@@ -61,6 +61,7 @@
         <Button size="small" @click="openSecondaryScreen">打开副屏页</Button>
         <Button size="small" @click="refreshSecondary">刷新副屏清单</Button>
         <Button size="small" @click="openLedPreview">LCD 预览与调试</Button>
+        <Button size="small" @click="openStudio">Studio 内容管理</Button>
       </div>
       <div class="launch-area">
         <span class="launch-hint">放映操作</span>
@@ -391,6 +392,7 @@ const openSecondaryScreen = () => {
 }
 
 const openLedPreview = () => window.open('/led-preview', '_blank')
+const openStudio = () => window.open('/studio', '_blank')
 
 /** 切换副屏内容源类型：kind 切换时清掉旧 mdPath 语义，重新拉清单并对账 */
 const switchSecondaryKind = (kind: 'pptist-remote' | 'reveal-md') => {

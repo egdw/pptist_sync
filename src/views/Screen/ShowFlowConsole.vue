@@ -93,8 +93,14 @@ const scheduleMonitorUpload = () => {
 onMounted(() => {
   // 首帧渲染完成后上传一次（联动放映「初次打开」）
   window.setTimeout(scheduleMonitorUpload, 1500)
+  // 轮询副屏当前页码（合成监控状态）
+  secPollTimer = window.setInterval(pollSecondaryPage, 3000)
+  void pollSecondaryPage()
 })
-onUnmounted(() => { if (monitorTimer) clearTimeout(monitorTimer) })
+onUnmounted(() => {
+  if (monitorTimer) clearTimeout(monitorTimer)
+  if (secPollTimer) clearInterval(secPollTimer)
+})
 watch(() => showFlowStore.snapshot, () => {
   // 每个虚拟步骤应用后上传最新主屏画面
   window.setTimeout(scheduleMonitorUpload, 700)
@@ -111,18 +117,25 @@ const phaseClass = computed(() => ({
 
 const secondaryOnline = computed(() => online.value.secondary)
 
-// ---- 迷你条超简文本 ----
+// ---- 迷你条超简文本：页码按虚拟序列推进（各自文稿的 当前页/总页） ----
 const miniMain = computed(() => {
   if (!snapshot.value?.mainPageId) return '主·'
-  const t = mainTitle.value
-  return t.length > 6 ? '主:' + t.slice(0, 6) : '主:' + t
+  return `主:${slidesStore.slideIndex + 1}/${slidesStore.slides.length}`
 })
 const miniSec = computed(() => {
   if (!snapshot.value?.secondaryPageId) return '副·'
-  const t = secondaryTitle.value
-  const s = t.length > 6 ? '副:' + t.slice(0, 6) : '副:' + t
-  return s
+  return `副:${secPageNo.value || '?'}`
 })
+
+// 副屏当前页码来自监控服务（副屏窗口截图上传时携带），跟随虚拟序列推进
+const secPageNo = ref('')
+let secPollTimer = 0
+const pollSecondaryPage = async () => {
+  try {
+    const s = await (await fetch('/monitor-api/status')).json()
+    if (s.secondaryPage) secPageNo.value = s.secondaryPage.split('/')[0]
+  } catch { /* 忽略 */ }
+}
 
 const mainTitle = computed(() => {
   if (!snapshot.value?.mainPageId) return '保持'

@@ -8,6 +8,20 @@ export interface LcdControllerOptions {
   onNotice?: (text: string, type?: 'info' | 'warning' | 'error' | 'success') => void
 }
 
+/** Controller-owned fixed display protocol; Studio test display reuses this path instead of constructing MQTT payloads. */
+export function publishLcdRenderResult(result: LedRenderResult, publish: (topic: string, payload: unknown) => boolean): number {
+  let sent = 0
+  for (const screen of result.screens) {
+    const payload = {
+      protocol: 'led-display/1.0', type: 'display', msg_id: nanoid(8),
+      revision: result.revision, role: screen.role,
+      image: { url: screen.url, format: screen.format, width: screen.width, height: screen.height, sha256: screen.sha256 },
+    }
+    if (publish(`presentation/led/${screen.role}/display`, payload)) sent++
+  }
+  return sent
+}
+
 export class LcdController {
   private lastPageId: string | null = null
   private queue = Promise.resolve()
@@ -32,15 +46,7 @@ export class LcdController {
   }
 
   private publish(result: LedRenderResult, _state: LcdSceneState) {
-    for (const screen of result.screens) {
-      const payload = {
-        protocol: 'led-display/1.0', type: 'display', msg_id: nanoid(8),
-        revision: result.revision, role: screen.role,
-        image: { url: screen.url, format: screen.format, width: screen.width, height: screen.height, sha256: screen.sha256 },
-      }
-      if (!this.options.publish(`presentation/led/${screen.role}/display`, payload)) {
-        throw new Error(`MQTT 未连接，${screen.role} 未发布`)
-      }
-    }
+    const sent = publishLcdRenderResult(result, this.options.publish)
+    if (sent !== result.screens.length) throw new Error(`MQTT 未连接，仅发布 ${sent}/${result.screens.length}`)
   }
 }

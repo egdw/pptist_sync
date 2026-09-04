@@ -31,7 +31,7 @@
       var total = deck.getTotalSlides ? deck.getTotalSlides() : 0;
       var page = (deck.getState ? deck.getState().indexh : 0) + 1;
       if (typeof htmlToImage === 'undefined') return;
-      htmlToImage.toPng(slide, { pixelRatio: 1 }).then(function (dataUrl) {
+      htmlToImage.toJpeg(slide, { pixelRatio: .65, quality: .78, backgroundColor: '#101522' }).then(function (dataUrl) {
         return fetch('/monitor-api/screen/secondary', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

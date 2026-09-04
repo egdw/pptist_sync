@@ -18,6 +18,7 @@ export function attachShowFlowWs(server, log = () => {}) {
   const wss = new WebSocketServer({ noServer: true })
   /** ws -> { role } */
   const clients = new Map()
+  const runtime = { stepId: null, mainPageId: null, secondaryPageId: null, seq: null, updatedAt: null }
 
   const byRole = role => {
     const found = []
@@ -58,7 +59,7 @@ export function attachShowFlowWs(server, log = () => {}) {
 
   wss.on('connection', (ws, req) => {
     const peer = `${req.socket.remoteAddress}:${req.socket.remotePort}`
-    clients.set(ws, { role: null })
+    clients.set(ws, { role: null, connectedAt: Date.now(), lastSeen: Date.now(), lastAck: null, lastHeartbeat: null, meta: {} })
     // 注意：不打印每次"连接"日志 —— 未获准角色的客户端会按退避间隔反复重连，
     // 逐连接打印会刷屏；注册与断开日志已足够定位问题
 
@@ -70,6 +71,12 @@ export function attachShowFlowWs(server, log = () => {}) {
       catch {
         send(ws, { type: 'ERROR', code: 'BAD_JSON', message: '消息不是合法 JSON' })
         return
+      }
+      const tracked = clients.get(ws)
+      if (tracked) {
+        tracked.lastSeen = Date.now()
+        if (msg.type === 'PING' || msg.type === 'PONG') tracked.lastHeartbeat = tracked.lastSeen
+        if (msg.type === 'ACK') tracked.lastAck = tracked.lastSeen
       }
 
       // —— 注册 ——
@@ -101,7 +108,7 @@ export function attachShowFlowWs(server, log = () => {}) {
             }, 500).unref()
           }
         }
-        clients.set(ws, { role, meta: msg.meta || {} })
+        clients.set(ws, { ...clients.get(ws), role, meta: msg.meta || {} })
         send(ws, { type: 'HELLO_ACK', role, meta: msg.meta })
         // 通知 controller 有新角色上线（controller 收到后回发 SYNC_STATE）
         for (const c of byRole('controller')) send(c, { type: 'HELLO', role })
@@ -113,6 +120,11 @@ export function attachShowFlowWs(server, log = () => {}) {
       if (!info?.role) {
         send(ws, { type: 'ERROR', code: 'NOT_REGISTERED', message: '请先发送 HELLO 注册角色' })
         return
+      }
+
+      // 只镜像 Controller 已经决定的快照，供 Studio 状态页只读展示；不参与路由和业务决策。
+      if (info.role === 'controller' && msg.type === 'SYNC_STATE' && msg.state) {
+        Object.assign(runtime, { stepId: msg.state.stepId || null, mainPageId: msg.state.mainPageId || null, secondaryPageId: msg.state.secondaryPageId || null, seq: msg.state.seq ?? null, updatedAt: Date.now() })
       }
 
       // —— 心跳 ——
@@ -163,5 +175,21 @@ export function attachShowFlowWs(server, log = () => {}) {
     // 其他路径不处理，交由其它 upgrade 监听者（如有）
   })
 
-  return wss
+  const getStatus = () => {
+    const now = Date.now()
+    const roles = {}
+    for (const [, info] of clients) {
+      if (!info.role) continue
+      const item = roles[info.role] || { role: info.role, connections: 0, online: true, connectedAt: info.connectedAt, lastSeen: null, lastAck: null, lastHeartbeat: null, meta: [] }
+      item.connections++
+      item.connectedAt = Math.min(item.connectedAt || info.connectedAt, info.connectedAt)
+      item.lastSeen = Math.max(item.lastSeen || 0, info.lastSeen || 0)
+      item.lastAck = Math.max(item.lastAck || 0, info.lastAck || 0) || null
+      item.lastHeartbeat = Math.max(item.lastHeartbeat || 0, info.lastHeartbeat || 0) || null
+      item.meta.push(info.meta || {})
+      roles[info.role] = item
+    }
+    return { totalConnections: clients.size, checkedAt: now, roles, runtime: { ...runtime } }
+  }
+  return { wss, getStatus }
 }
