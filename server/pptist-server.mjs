@@ -39,6 +39,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { attachShowFlowWs } from './showflow-ws.mjs'
+import { createHtmlPresentations } from './html-presentations.mjs'
 import { createLedRenderService } from './led/render-service.mjs'
 import { createStudioService } from './studio-service.mjs'
 import { createMonitorService } from './monitor-service.mjs'
@@ -284,6 +285,8 @@ function createDocStore({ dataDir, label }) {
         () => processUpload(header),
         () => processUpload(header),
       ))
+      // HTML 播放源扩展：原 PPT/PDF 上传成功后，播放源切回 PPT（不改 PPT 数据）
+      await handleHtml.onPptUploaded().catch(error => log('HTML 播放源切换失败：', error.message))
       slog(`上传成功：v${result.seq} ${result.filename}（${result.pageCount} 页）`)
       sendJson(res, 200, { ok: true, ...publicMeta() })
     }
@@ -419,6 +422,8 @@ async function serveStatic(req, res, pathname, baseDir = DIST_DIR) {
       return
     }
   }
+  // HTML 播放源扩展：旧 SPA（/play、/upload）响应时注入导航脚本，不改动编译产物
+  if (await handleHtml.serveLegacyIndex(req, res, filePath)) return
   const ext = path.extname(filePath).toLowerCase()
   res.writeHead(200, {
     'Content-Type': MIME[ext] || 'application/octet-stream',
@@ -451,11 +456,15 @@ function proxyRemoteApi(req, res, pathname) {
   req.pipe(upstream)
 }
 
+// 独立新增模块：HTML 上传/预览/播放源，不进入原有 PPT/PDF 校验、解析或存储流程。
+const handleHtml = await createHtmlPresentations({ dataDir: DATA_DIR, publicUrl: PUBLIC_URL, getPpt: () => mainDocStore.getCurrent(), log })
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
   const pathname = url.pathname
 
   try {
+    if (await handleHtml(req, res, url)) return
     if (pathname.startsWith('/api/studio/')) {
       res.setHeader('Access-Control-Allow-Origin', '*')
       const readJson = async () => {
