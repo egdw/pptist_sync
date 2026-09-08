@@ -25,6 +25,8 @@
           <img 
             :src="elementInfo.src" 
             :draggable="false" 
+            loading="lazy"
+            decoding="async"
             :style="{
               top: imgPosition.top,
               left: imgPosition.left,

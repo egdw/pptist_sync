@@ -269,14 +269,14 @@ try {
     ok('连续上传：按提交顺序串行处理，最终为最新提交的版本（v6）')
   }
 
-  // 7. 历史版本不保留：仅存在当前默认版本目录
+  // 7. 版本保留策略：保留最近 2 个版本（v3 资产懒加载期间旧版本仍可能被请求）
   {
     const versionsDir = path.join(dataDir, 'versions')
     const names = await fsp.readdir(versionsDir)
     const current = await (await fetch(`${BASE}/default-ppt-api/current`)).json()
-    assert.equal(names.length, 1, `应仅保留当前版本目录，实际 ${names.length} 个`)
-    assert.equal(names[0], current.version)
-    ok('历史版本清理：仅保留当前默认版本，其余已删除')
+    assert.ok(names.length <= 2, `应最多保留 2 个版本目录，实际 ${names.length} 个`)
+    assert.ok(names.includes(current.version), '当前版本目录必须存在')
+    ok('历史版本清理：保留最近 2 个版本（v3 懒加载兼容），更早版本已删除')
   }
 
   // 8. SPA 路由回退

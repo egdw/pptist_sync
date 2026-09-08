@@ -126,6 +126,7 @@ import {
   type DefaultPptConfig,
   type DefaultPptMeta,
 } from '@/services/defaultPpt'
+import { uploadMainDeckV3 } from '@/services/mainDeckUpload'
 import { copyText } from '@/utils/clipboard'
 import message from '@/utils/message'
 import * as pdfjsLib from 'pdfjs-dist'
@@ -154,6 +155,14 @@ const dragging = ref(false)
 // 解析产物：按页分片的 bundle BlobPart（避免超大 JSON 字符串）与页数
 const parsedBundleParts = ref<BlobPart[] | null>(null)
 const parsedPageCount = ref(0)
+// 主屏 v3 解析产物：轻结构快照（src 为 blob: URL），上传阶段逐资产化
+const parsedV3 = ref<{
+  slides: DefaultPptBundle['slides']
+  theme: Partial<DefaultPptBundle['theme']> | undefined
+  viewportSize?: number
+  viewportRatio?: number
+  title?: string
+} | null>(null)
 // 解析前播种的空页 id：导入完成后 store 中仍只有该页，说明解析失败
 let seedSlideId = ''
 
@@ -203,6 +212,7 @@ const validateFile = (file: File): string | null => {
 const resetParseState = () => {
   parsed.value = false
   parsedBundleParts.value = null
+  parsedV3.value = null
   parsedPageCount.value = 0
   errorText.value = ''
   successText.value = ''
@@ -221,8 +231,9 @@ const buildBundleParts = (bundle: DefaultPptBundle): BlobPart[] => {
   return parts
 }
 
-/** PDF：pdf.js 逐页渲染为图片页（每页背景图铺满），页面文字提取到演讲者备注 */
-const parsePdf = async (file: File): Promise<DefaultPptBundle> => {
+/** PDF：pdf.js 逐页渲染为图片页（每页背景图铺满），页面文字提取到演讲者备注。
+ *  main 目标用 toBlob + objectURL（v3 资产化上传，峰值内存 ≈ 单页）；secondary 保持 dataURL（旧信封协议）。 */
+const parsePdf = async (file: File, opts: { blobSrc?: boolean } = {}): Promise<DefaultPptBundle> => {
   const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise
   const slides: DefaultPptBundle['slides'] = []
   let viewportRatio = 0.5625
@@ -244,7 +255,15 @@ const parsePdf = async (file: File): Promise<DefaultPptBundle> => {
     context.fillStyle = '#ffffff'
     context.fillRect(0, 0, canvas.width, canvas.height)
     await page.render({ canvasContext: context, viewport }).promise
-    const src = canvas.toDataURL('image/jpeg', 0.9)
+
+    let src = ''
+    if (opts.blobSrc) {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(b => b ? resolve(b) : reject(new Error('页面导出失败')), 'image/jpeg', 0.9)
+      })
+      src = URL.createObjectURL(blob)
+    }
+    else src = canvas.toDataURL('image/jpeg', 0.9)
 
     let remark = ''
     try {
@@ -266,6 +285,9 @@ const parsePdf = async (file: File): Promise<DefaultPptBundle> => {
       remark,
     })
     page.cleanup()
+    // 释放本页 Canvas（v3 模式下页面字节已进入 Blob 存储，画布可立即回收）
+    canvas.width = 0
+    canvas.height = 0
   }
 
   if (!slides.length) throw new Error('PDF 没有可显示的页面')
@@ -292,8 +314,20 @@ const handleFile = async (file: File) => {
   if (isPdf(file)) {
     statusText.value = '解析中 ...'
     try {
-      const bundle = await parsePdf(file)
-      parsedBundleParts.value = buildBundleParts(bundle)
+      const bundle = await parsePdf(file, { blobSrc: uploadTarget.value === 'main' })
+      if (uploadTarget.value === 'main') {
+        // v3：保留 blob URL 引用结构，上传时逐资产化，不在解析阶段生成巨型 JSON
+        parsedV3.value = {
+          slides: bundle.slides,
+          theme: bundle.theme || {},
+          viewportSize: bundle.viewportSize,
+          viewportRatio: bundle.viewportRatio,
+          title: bundle.title,
+        }
+      }
+      else {
+        parsedBundleParts.value = buildBundleParts(bundle)
+      }
       parsedPageCount.value = bundle.slides.length
       parsed.value = true
       statusText.value = `解析成功：共 ${bundle.slides.length} 页，可以上传`
@@ -313,7 +347,8 @@ const handleFile = async (file: File) => {
   seedSlideId = nanoid(10)
   slidesStore.setSlides([{ id: seedSlideId, elements: [] }])
   slidesStore.updateSlideIndex(0)
-  importPPTXFile([file])
+  // 主屏走 v3 资源化：blob 模式解析（图片为 objectURL，避免整份 base64 字符串）
+  importPPTXFile([file], { imageMode: uploadTarget.value === 'main' ? 'blob' : 'base64' })
 }
 
 const handleFileChange = (e: Event) => {
@@ -342,20 +377,34 @@ watch(exporting, value => {
     parsed.value = false
     return
   }
-  parsedBundleParts.value = buildBundleParts({
-    title: slidesStore.title,
-    slides: resultSlides,
-    theme: slidesStore.theme,
-    viewportSize: slidesStore.viewportSize,
-    viewportRatio: slidesStore.viewportRatio,
-  })
+  if (uploadTarget.value === 'main') {
+    // v3：结构快照（src 为短 blob: URL 字符串，体积小），上传阶段逐资产化
+    parsedV3.value = {
+      slides: JSON.parse(JSON.stringify(resultSlides)),
+      theme: slidesStore.theme,
+      viewportSize: slidesStore.viewportSize,
+      viewportRatio: slidesStore.viewportRatio,
+      title: slidesStore.title,
+    }
+  }
+  else {
+    parsedBundleParts.value = buildBundleParts({
+      title: slidesStore.title,
+      slides: resultSlides,
+      theme: slidesStore.theme,
+      viewportSize: slidesStore.viewportSize,
+      viewportRatio: slidesStore.viewportRatio,
+    })
+  }
   parsedPageCount.value = resultSlides.length
   parsed.value = true
   statusText.value = `解析成功：共 ${resultSlides.length} 页，可以上传`
 })
 
 const upload = async () => {
-  if (!selectedFile.value || !parsed.value || !parsedBundleParts.value || uploading.value) return
+  if (!selectedFile.value || !parsed.value || uploading.value) return
+  if (uploadTarget.value === 'main' && !parsedV3.value) return
+  if (uploadTarget.value === 'secondary' && !parsedBundleParts.value) return
   uploading.value = true
   errorText.value = ''
   successText.value = ''
@@ -363,20 +412,52 @@ const upload = async () => {
   progressPercent.value = 0
 
   try {
-    progressPercent.value = 100
-    statusText.value = '保存中 ...'
-    const result = await uploadDefaultPpt({
-      filename: selectedFile.value.name,
-      file: selectedFile.value,
-      pageCount: parsedPageCount.value,
-      bundleParts: parsedBundleParts.value,
-    }, percent => (progressPercent.value = percent), uploadTarget.value)
-    successText.value = uploadTarget.value === 'secondary'
-      ? '已设为副屏文稿（PPTist B），副屏页加载完成后将自动切换。'
-      : '已设为默认 PPT，更新通知已发送。播放页面加载完成后将自动切换。'
+    if (uploadTarget.value === 'main') {
+      const v3 = parsedV3.value!
+      await uploadMainDeckV3({
+        filename: selectedFile.value.name,
+        rawFile: selectedFile.value,
+        slides: v3.slides,
+        theme: v3.theme,
+        viewportSize: v3.viewportSize,
+        viewportRatio: v3.viewportRatio,
+        title: v3.title,
+        onProgress: info => {
+          if (info.phase === 'assets') {
+            statusText.value = `上传媒体资源 ${info.done}/${info.total} ${info.detail || ''}`
+            progressPercent.value = info.total ? Math.round(info.done / info.total * 85) : 0
+          }
+          else if (info.phase === 'raw') {
+            statusText.value = `上传原始文件（${info.detail || ''}）...`
+            progressPercent.value = 90
+          }
+          else if (info.phase === 'bundle') {
+            statusText.value = '上传文稿结构 ...'
+            progressPercent.value = 95
+          }
+          else {
+            statusText.value = '发布新版本 ...'
+            progressPercent.value = 99
+          }
+        },
+      })
+      successText.value = '已设为默认 PPT，更新通知已发送。播放页面加载完成后将自动切换。'
+      const meta = await fetchDefaultPptCurrent()
+      currentMeta.value = meta
+    }
+    else {
+      progressPercent.value = 100
+      statusText.value = '保存中 ...'
+      const result = await uploadDefaultPpt({
+        filename: selectedFile.value.name,
+        file: selectedFile.value,
+        pageCount: parsedPageCount.value,
+        bundleParts: parsedBundleParts.value!,
+      }, percent => (progressPercent.value = percent), uploadTarget.value)
+      successText.value = '已设为副屏文稿（PPTist B），副屏页加载完成后将自动切换。'
+      secondaryMeta.value = result
+    }
     statusText.value = ''
-    if (uploadTarget.value === 'secondary') secondaryMeta.value = result
-    else currentMeta.value = result
   }
   catch (error) {
     // 失败不影响旧默认 PPT，也不影响正在播放的页面

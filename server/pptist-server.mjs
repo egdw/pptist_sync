@@ -45,6 +45,7 @@ import { createLedRenderService } from './led/render-service.mjs'
 import { createStudioService } from './studio-service.mjs'
 import { parseMarkdownManifest } from './studio-html-md-manifest.mjs'
 import { createMonitorService } from './monitor-service.mjs'
+import { createDefaultPptV3 } from './default-ppt-v3.mjs'
 import { createMonitorMqttPublisher } from './monitor-mqtt-publisher.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -199,10 +200,12 @@ function createDocStore({ dataDir, label }) {
       const raw = await fsp.readFile(currentFile, 'utf8')
       const meta = JSON.parse(raw)
       if (meta && meta.version && meta.seq > 0) {
-        // 校验版本目录完整性，损坏则视为无默认文稿
-        await fsp.access(path.join(versionsDir, meta.version, 'slides.json'))
-        await fsp.access(path.join(versionsDir, meta.version, 'raw.file'))
-        current = meta
+        // 校验版本目录完整性（v2: slides.json；v3: bundle.json），损坏则视为无默认文稿
+        const versionDir = path.join(versionsDir, meta.version)
+        const hasV2 = await fsp.stat(path.join(versionDir, 'slides.json')).then(() => true, () => false)
+        const hasV3 = await fsp.stat(path.join(versionDir, 'bundle.json')).then(() => true, () => false)
+        await fsp.access(path.join(versionDir, 'raw.file'))
+        if (hasV2 || hasV3) current = meta
       }
     }
     catch {
@@ -216,12 +219,13 @@ function createDocStore({ dataDir, label }) {
     return { exists: true, seq, version, filename, pageCount, updatedAt }
   }
 
-  /** 仅保留当前版本：其余版本目录全部清理（播放端已将文稿载入内存，删除不影响播放） */
-  async function cleanupVersions() {
+  /** 保留最近 N 个版本：v3 资产为懒加载，播放中的旧版本可能仍被请求（资产在全局池，不受影响） */
+  async function cleanupVersions(keep = 2) {
     try {
-      const names = await fsp.readdir(versionsDir)
-      for (const name of names) {
-        if (name === current?.version) continue
+      const names = (await fsp.readdir(versionsDir))
+        .filter(n => /^v\d+$/.test(n))
+        .sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)))
+      for (const name of names.slice(keep)) {
         await fsp.rm(path.join(versionsDir, name), { recursive: true, force: true }).catch(() => {})
       }
     }
@@ -306,10 +310,44 @@ function createDocStore({ dataDir, label }) {
     }
 
     current = meta
-    // 仅保留当前版本：历史版本立即清理（各播放端已将文稿载入内存，不受影响）
+    // 仅保留最近版本：历史版本按保留策略清理
     await cleanupVersions()
     broadcastVersion(meta)
     return meta
+  }
+
+  /**
+   * v3 资源化发布（主屏专用）：把会话中已暂存的 bundle.json + raw.file
+   * 组装为新版本并原子切换 current.json。文件经 rename 落位，服务端全程不整读 bundle。
+   */
+  function publishVersion({ filename, pageCount, files }) {
+    const task = async () => {
+      const seq = (current?.seq || 0) + 1
+      const version = `v${seq}`
+      const meta = { seq, version, filename, pageCount, updatedAt: new Date().toISOString() }
+      const versionDir = path.join(versionsDir, version)
+      const staging = path.join(tmpDir, `publish-${version}-${crypto.randomUUID()}`)
+      await fsp.mkdir(staging, { recursive: true })
+      try {
+        await fsp.rename(files.bundlePath, path.join(staging, 'bundle.json'))
+        await fsp.rename(files.rawPath, path.join(staging, 'raw.file'))
+        await fsp.writeFile(path.join(staging, 'meta.json'), JSON.stringify({ ...meta, schema: 'v3' }, null, 2))
+        await fsp.rm(versionDir, { recursive: true, force: true })
+        await fsp.rename(staging, versionDir)
+        await atomicWrite(currentFile, JSON.stringify(meta, null, 2))
+      }
+      catch (error) {
+        await fsp.rm(staging, { recursive: true, force: true }).catch(() => {})
+        throw new Error(`保存新版本失败：${error.message}`)
+      }
+      current = meta
+      await cleanupVersions()
+      broadcastVersion(meta)
+      return meta
+    }
+    const next = uploadChain.then(task, task)
+    uploadChain = next.catch(() => {})
+    return next
   }
 
   async function handleUpload(req, res) {
@@ -339,13 +377,20 @@ function createDocStore({ dataDir, label }) {
       sendJson(res, 404, { error: '暂无默认 PPT' })
       return
     }
-    const bundle = await fsp.readFile(path.join(versionsDir, current.version, 'slides.json'), 'utf8')
+    const versionDir = path.join(versionsDir, current.version)
+    // v3 版本优先 bundle.json（轻结构，src 为资产 URL）；v2 回退 slides.json
+    const hasBundle = await fsp.stat(path.join(versionDir, 'bundle.json')).then(() => true, () => false)
+    const filePath = path.join(versionDir, hasBundle ? 'bundle.json' : 'slides.json')
+    const stat = await fsp.stat(filePath).catch(() => null)
+    if (!stat) { sendJson(res, 404, { error: '暂无默认 PPT' }); return }
+    // 流式输出：大文稿的解析数据不再整份读入服务端内存
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': stat.size,
       'Cache-Control': 'no-store',
       'X-PPTist-Version': current.version,
     })
-    res.end(bundle)
+    fs.createReadStream(filePath).pipe(res)
   }
 
   async function serveFile(res) {
@@ -353,14 +398,17 @@ function createDocStore({ dataDir, label }) {
       sendJson(res, 404, { error: '暂无默认 PPT' })
       return
     }
-    const raw = await fsp.readFile(path.join(versionsDir, current.version, 'raw.file'))
+    const filePath = path.join(versionsDir, current.version, 'raw.file')
+    const stat = await fsp.stat(filePath).catch(() => null)
+    if (!stat) { sendJson(res, 404, { error: '暂无默认 PPT' }); return }
+    // 流式输出原始文件（数百 MB 的 PPTX/PDF 下载不再占用等量服务端内存）
     res.writeHead(200, {
       'Content-Type': MIME['.pptx'],
-      'Content-Length': raw.length,
+      'Content-Length': stat.size,
       'Content-Disposition': `attachment; filename="${encodeURIComponent(current.filename)}"`,
       'Cache-Control': 'no-store',
     })
-    res.end(raw)
+    fs.createReadStream(filePath).pipe(res)
   }
 
   // 心跳：防止空闲 SSE 连接被代理/防火墙断开
@@ -377,10 +425,12 @@ function createDocStore({ dataDir, label }) {
 
   return {
     label,
+    versionsDir,
     ensureDirs,
     loadCurrent,
     publicMeta,
     handleUpload,
+    publishVersion,
     serveEvents,
     serveSlides,
     serveFile,
@@ -391,6 +441,8 @@ function createDocStore({ dataDir, label }) {
 // 双槽位文稿存储：主屏（/default-ppt-api，行为不变）+ 副屏 PPTist B（/showflow-api/secondary-doc）
 const mainDocStore = createDocStore({ dataDir: DATA_DIR, label: '主屏文稿' })
 const secondaryDocStore = createDocStore({ dataDir: SECONDARY_DATA_DIR, label: '副屏文稿(PPTist B)' })
+// 主屏 v3 资源化扩展（资产池 + 会话上传 + 版本化 bundle）；副屏不受影响
+const defaultPptV3 = createDefaultPptV3({ store: mainDocStore, dataDir: DATA_DIR, maxUploadBytes: MAX_UPLOAD_MB * 1024 * 1024, log })
 
 /** 读取原始请求体：优先按 Content-Length 一次性预分配（大文件上传避免双倍内存），超限立即断开 */
 function readRawBody(req, maxBytes) {
@@ -775,6 +827,8 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith('/default-ppt-api/')) {
       res.setHeader('Access-Control-Allow-Origin', '*')
+      // v3 会话上传 / 资产池 / 版本化 bundle（主屏专用；命中即处理完毕）
+      if (await defaultPptV3.handle(req, res, url)) return
       if (req.method === 'GET' && pathname === '/default-ppt-api/config') {
         sendJson(res, 200, {
           publicBaseUrl: PUBLIC_URL || null,
@@ -782,6 +836,8 @@ const server = http.createServer(async (req, res) => {
           acceptTypes: ['.pptx', '.pdf'],
           // 上传信封协议版本：前端据此检测与服务端版本是否一致（旧版服务端无此字段）
           uploadEnvelope: 2,
+          // v3 资源化上传（会话式 + 资产池）能力标记
+          uploadV3: 1,
         })
         return
       }
@@ -941,6 +997,8 @@ const server = http.createServer(async (req, res) => {
 })
 
 await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init(), monitorService.init()])
+// ensureDirs 会清空 tmp/（含 v3 会话目录），v3 初始化必须在其后重建
+await defaultPptV3.init()
 try { monitorPublisher.applyConfig(JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8'))) } catch { /* 尚未配置 MQTT */ }
 await Promise.all([mainDocStore.loadCurrent(), secondaryDocStore.loadCurrent()])
 const showFlowWs = attachShowFlowWs(server, log)

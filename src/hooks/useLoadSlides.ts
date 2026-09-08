@@ -1,28 +1,19 @@
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useSlidesStore } from '@/store'
 
 export default () => {
-  const { slides } = storeToRefs(useSlidesStore())
+  const { slides, slideIndex } = storeToRefs(useSlidesStore())
 
-  const timer = ref<ReturnType<typeof setTimeout> | null>(null)
-  const slidesLoadLimit = ref(50)
-
-  const loadSlide = () => {
-    if (slides.value.length > slidesLoadLimit.value) {
-      timer.value = setTimeout(() => {
-        slidesLoadLimit.value = slidesLoadLimit.value + 20
-        loadSlide()
-      }, 600)
-    }
-    else slidesLoadLimit.value = 9999
-  }
-
-  onMounted(loadSlide)
-
-  onUnmounted(() => {
-    if (timer.value) clearTimeout(timer.value)
-  })
+  // 挂载窗口锚定当前页：只挂当前页附近的缩略图，不再随时间渐进加载全部页面。
+  // 初始给足首屏缓冲；播放/跳页时窗口随之移动，从未到达的远端页保持占位，
+  // 避免大文稿打开后所有页面的图片（含 GIF）被陆续挂载解码。
+  const BASE_LIMIT = 40
+  const LOOKAHEAD = 30
+  const slidesLoadLimit = computed(() => Math.min(
+    slides.value.length,
+    Math.max(BASE_LIMIT, slideIndex.value + LOOKAHEAD),
+  ))
 
   return {
     slidesLoadLimit,

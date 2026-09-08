@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { parse, type Shape, type Element, type ChartItem, type BaseElement } from 'pptxtojson'
 import { nanoid } from 'nanoid'
+import { bridgePptxBlobImages } from '@/utils/pptxBlobBridge'
 import tinycolor from 'tinycolor2'
 import { useSlidesStore } from '@/store'
 import { decrypt } from '@/utils/crypto'
@@ -645,12 +646,13 @@ export default () => {
   }
 
   // 导入PPTX文件
-  const importPPTXFile = (files: FileList | File[], options?: { cover?: boolean; fixedViewport?: boolean }) => {
+  const importPPTXFile = (files: FileList | File[], options?: { cover?: boolean; fixedViewport?: boolean; imageMode?: 'base64' | 'blob' }) => {
     const defaultOptions = {
       cover: false,
-      fixedViewport: false, 
+      fixedViewport: false,
+      imageMode: 'base64' as const,
     }
-    const { cover, fixedViewport } = { ...defaultOptions, ...options }
+    const { cover, fixedViewport, imageMode } = { ...defaultOptions, ...options }
 
     const file = files[0]
     if (!file) return
@@ -661,13 +663,13 @@ export default () => {
     for (const item of SHAPE_LIST) {
       shapeList.push(...item.children)
     }
-    
+
     const reader = new FileReader()
     reader.onload = async e => {
       let json = null
       try {
         json = await parse(e.target!.result as ArrayBuffer, {
-          imageMode: 'base64',
+          imageMode,
           videoMode: 'blob',
           audioMode: 'blob',
         })
@@ -677,6 +679,10 @@ export default () => {
         message.error('无法正确读取 / 解析该文件')
         return
       }
+
+      // blob 模式桥接：图片元素与背景填充的 base64 字段为空、blob 为 objectURL；
+      // 统一由纯函数桥接（与 Node 测试共用同一实现），上传页随后将 blob: 引用资产化。
+      if (imageMode === 'blob') bridgePptxBlobImages(json)
 
       if (json.usedFonts && json.usedFonts.length) loadGoogleFonts(json.usedFonts)
 
