@@ -76,6 +76,9 @@
 
     <div class="right">
       <div class="group-menu-item">
+        <div class="menu-item" v-tooltip="'多屏联动编排（Virtual Show Flow）'" @click="openShowFlowEditor()">
+          <i-icon-park-outline:connection class="icon" />
+        </div>
         <div class="menu-item" v-tooltip="'幻灯片放映（F5）'" @click="enterScreening()">
           <i-icon-park-outline:ppt class="icon" />
         </div>
@@ -185,6 +188,11 @@ const openMarkupPanel = () => {
 
 const openPresentationLinkPanel = () => {
   mainStore.setPresentationLinkPanelState(true)
+}
+
+// 多屏联动编排：新窗口打开独立编排页（/showflow）
+const openShowFlowEditor = () => {
+  window.open('/showflow', '_blank')
 }
 
 const setPresentationLinkPanelState = (show: boolean) => {

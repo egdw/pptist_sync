@@ -11,7 +11,7 @@
 import { reactive, watch, type Ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useScreenStore, useSlidesStore } from '@/store'
-import { loadPresentationLinkConfig, clonePresentationLinkConfig, savePresentationLinkConfig, type PresentationLinkConfig } from '@/configs/presentationLink'
+import { loadPresentationLinkConfig, loadPresentationLinkConfigFromServer, clonePresentationLinkConfig, savePresentationLinkConfig, type PresentationLinkConfig } from '@/configs/presentationLink'
 import { MqttLink, WsLink, testMqttConnection, testWsConnection, type ChannelId, type ChannelHooks, type ConnectionTestResult } from './channels'
 import { PresentationSession } from './session'
 import { remarkToPlainText } from './remarkText'
@@ -131,7 +131,7 @@ export function initPresentationBridge() {
 
   presentationLinkState.inited = true
   pushLog('info', '系统', '放映联动桥接已初始化（主控窗口）')
-  applyConfig(loadPresentationLinkConfig())
+  void loadPresentationLinkConfigFromServer().then(config => applyConfig(config))
 }
 
 // 统一的同步 watch 包装（集中声明 flush: 'sync'）
@@ -189,6 +189,11 @@ function publish(message: PresentationEventMessage, label: string) {
     // 任何异常都不允许影响放映
     pushLog('error', '系统', `事件发送异常：${(error as Error)?.message || error}`)
   }
+}
+
+/** ShowFlow LCD 专用发布入口：复用主控 MQTT 连接，但允许固定独立 topic/protocol。 */
+export function publishPresentationMqtt(topic: string, payload: unknown): boolean {
+  return !!mqttLink?.publish(topic, JSON.stringify(payload), { qos: 1, retain: true })
 }
 
 /** 应用新配置：保存到 localStorage，并按需重建通道连接 */

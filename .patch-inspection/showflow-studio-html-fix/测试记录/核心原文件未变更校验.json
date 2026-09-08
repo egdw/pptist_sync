@@ -1,0 +1,37 @@
+[
+  {
+    "path": "package.json",
+    "unchanged": true,
+    "sha256": "9de13bff635e348d8fe8b33ac272d603a41bd0a89ac3c830d9ce0d049319d3d7"
+  },
+  {
+    "path": "package-lock.json",
+    "unchanged": true,
+    "sha256": "072501345c874faa0f2b9c12a500cf3068979d833950c2c454f4d4cc5e619c82"
+  },
+  {
+    "path": "src/show-flow/controller.ts",
+    "unchanged": true,
+    "sha256": "78474711e00da1905523c665489a87d633bcb6885038d5e5aef308f08c4699b6"
+  },
+  {
+    "path": "src/show-flow/websocket/protocol.ts",
+    "unchanged": true,
+    "sha256": "64f7c95cd49532c922ea43c1137a05d3fa3bccc153d2f4e632a6f550eeb3d5f4"
+  },
+  {
+    "path": "src/show-flow/types.ts",
+    "unchanged": true,
+    "sha256": "e53da062da6b856c9bbd7751a48b2fbbd88eb44885b147a864f65992bc49a5cc"
+  },
+  {
+    "path": "server/showflow-ws.mjs",
+    "unchanged": true,
+    "sha256": "2c8d5982d8a51462d4cb8c894933b94c65d2e2a7a18b97389897cae1bf21549f"
+  },
+  {
+    "path": "src/show-flow/lcd/lcd-controller.ts",
+    "unchanged": true,
+    "sha256": "dc9e476f5f95e789b53f0cf4543a460f96aeaf050b33bf5172cc6b5383af1239"
+  }
+]

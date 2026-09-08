@@ -6,6 +6,7 @@ import { KEYS } from '@/configs/hotkey'
 import { ANIMATION_CLASS_PREFIX } from '@/configs/animation'
 import message from '@/utils/message'
 import type { Slide } from '@/types/slides'
+import { useShowFlowStore } from '@/show-flow/store'
 
 const AUDIENCE_SYNC_CHANNEL = 'pptist-audience-sync'
 
@@ -171,11 +172,26 @@ export default () => {
     message.success(msg)
   }, 1000, { leading: true, trailing: false })
 
+  // 多屏联动接管：ShowFlow 启用且有编排步骤时，翻页不再是 PPT next()/prev()，
+  // 而是 ShowFlow.next()/previous()（虚拟步骤时间轴，唯一播放控制权）。
+  // 本机作为受控副屏（/secondary 页）时，完全忽略本机翻页，由控制器远程驱动。
+  const showFlowTakeover = (): boolean | 'suppress' => {
+    const showFlowStore = useShowFlowStore()
+    if (showFlowStore.remoteControlled) return 'suppress'
+    return showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
+  }
+
   // 向上/向下播放
   // 遇到元素动画时，优先执行动画播放，无动画则执行翻页
   // 向上播放遇到动画时，仅撤销到动画执行前的状态，不需要反向播放动画
   // 撤回到上一页时，若该页从未播放过（意味着不存在动画状态），需要将动画索引置为最小值（初始状态），否则置为最大值（最终状态）
   const execPrev = (broadcast = true) => {
+    const takeover = showFlowTakeover()
+    if (takeover === 'suppress') return
+    if (takeover) {
+      useShowFlowStore().previous()
+      return
+    }
     if (broadcast) syncChannel?.postMessage({ type: 'EXEC_PREV' } as SyncMessage)
     if (formatedAnimations.value.length && animationIndex.value > 0) {
       revokeAnimation()
@@ -195,6 +211,12 @@ export default () => {
     inAnimation.value = false
   }
   const execNext = () => {
+    const takeover = showFlowTakeover()
+    if (takeover === 'suppress') return
+    if (takeover) {
+      useShowFlowStore().next()
+      return
+    }
     syncChannel?.postMessage({ type: 'EXEC_NEXT' } as SyncMessage)
     if (formatedAnimations.value.length && animationIndex.value < formatedAnimations.value.length) {
       runAnimation()
@@ -257,8 +279,9 @@ export default () => {
     }
   }
 
-  // 快捷键翻页
+  // 快捷键翻页（过滤按住不放的重复事件，避免连续触发多次）
   const keydownListener = throttle(function(e: KeyboardEvent) {
+    if (e.repeat) return
     const key = e.key.toUpperCase()
 
     if (key === KEYS.UP || key === KEYS.LEFT || key === KEYS.PAGEUP) execPrev()

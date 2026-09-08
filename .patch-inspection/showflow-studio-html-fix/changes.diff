@@ -1,0 +1,968 @@
+--- a/server/studio-service.mjs
++++ b/server/studio-service.mjs
+@@ -1,7 +1,8 @@
+ import crypto from 'node:crypto'
+ import fsp from 'node:fs/promises'
+ import path from 'node:path'
+-import AdmZip from 'adm-zip'
++async function openZip(data) { const { default: AdmZip } = await import('adm-zip'); return new AdmZip(data) }
++import { inspectHtml, HTML_META_FILE } from './studio-html.mjs'
+ 
+ const MAX_MARKDOWN = 5 * 1024 * 1024
+ const ASSET_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'])
+@@ -18,7 +19,7 @@
+ }
+ 
+ function versionId(date = new Date()) {
+-  return date.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '')
++  return date.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/Z$/, '').replace('.', '-') + '-' + crypto.randomInt(100000, 999999)
+ }
+ 
+ const PORTRAIT_ROLES = ['manager', 'platform', 'twin', 'hardware']
+@@ -35,6 +36,10 @@
+   const lcdThemesDir = path.join(studioDir, 'lcd-themes')
+   const defaultLcdTheme = { background: '#101b31', taskFontSize: 46, roleFontSize: 60, stageFontSize: 56, maxTaskLines: 3 }
+   let writeChain = Promise.resolve()
++  function serialize(task) {
++    writeChain = writeChain.catch(() => {}).then(task)
++    return writeChain
++  }
+ 
+   async function exists(file) { return !!(await fsp.stat(file).catch(() => null)) }
+   async function readMeta() {
+@@ -70,7 +75,7 @@
+   function saveDraft(markdown) {
+     if (typeof markdown !== 'string' || !markdown.trim()) throw new Error('Markdown 不能为空')
+     if (Buffer.byteLength(markdown) > MAX_MARKDOWN) throw new Error('Markdown 不能超过 5MB')
+-    writeChain = writeChain.then(async () => {
++    writeChain = writeChain.catch(() => {}).then(async () => {
+       await atomicWrite(draftFile, markdown.replace(/\r\n/g, '\n'))
+       const meta = await readMeta()
+       meta.draftRevision = Number(meta.draftRevision || 0) + 1
+@@ -82,7 +87,7 @@
+   }
+ 
+   function publish(message = '') {
+-    writeChain = writeChain.then(async () => {
++    writeChain = writeChain.catch(() => {}).then(async () => {
+       const markdown = await fsp.readFile(draftFile, 'utf8')
+       const id = versionId()
+       const target = path.join(versionsDir, id)
+@@ -111,16 +116,21 @@
+     return items
+   }
+ 
+-  async function restore(id) {
+-    if (!/^[0-9T_\-]+$/.test(id)) throw new Error('无效版本 ID')
+-    const markdown = await fsp.readFile(path.join(versionsDir, id, 'slides.md'), 'utf8')
+-    await saveDraft(markdown)
+-    const version = JSON.parse(await fsp.readFile(path.join(versionsDir, id, 'version.json'), 'utf8'))
+-    const meta = await readMeta()
+-    if (version.revealTheme) meta.draftRevealTheme = version.revealTheme
+-    if (version.lcdTheme) meta.draftLcdTheme = version.lcdTheme
+-    await writeMeta(meta)
+-    return status()
++  function restore(id) {
++    return serialize(async () => {
++      if (!/^[0-9T_\-]+$/.test(id)) throw new Error('无效版本 ID')
++      const markdown = await fsp.readFile(path.join(versionsDir, id, 'slides.md'), 'utf8')
++      const version = JSON.parse(await fsp.readFile(path.join(versionsDir, id, 'version.json'), 'utf8'))
++      if (version.revealTheme) await themeInfo(version.revealTheme)
++      await atomicWrite(draftFile, markdown)
++      const meta = await readMeta()
++      meta.draftRevision = Number(meta.draftRevision || 0) + 1
++      meta.draftUpdatedAt = new Date().toISOString()
++      if (version.revealTheme) meta.draftRevealTheme = version.revealTheme
++      if (version.lcdTheme) meta.draftLcdTheme = version.lcdTheme
++      await writeMeta(meta)
++      return status()
++    })
+   }
+ 
+   async function listAssets() {
+@@ -182,16 +192,52 @@
+     return { role, url: `/reveal/portraits/${role}.png` }
+   }
+ 
++  function checkThemeId(id) {
++    if (typeof id !== 'string' || !/^[a-zA-Z0-9\u4e00-\u9fff][a-zA-Z0-9._\-\u4e00-\u9fff]{0,180}$/.test(id)) throw new Error('无效主题 ID')
++    return id
++  }
++  async function themeInfo(id) {
++    checkThemeId(id)
++    if (id === 'default') return { id, name: '内置主题', kind: 'css' }
++    const dir = path.join(themesDir, id)
++    if (await exists(path.join(dir, HTML_META_FILE))) return { ...JSON.parse(await fsp.readFile(path.join(dir, HTML_META_FILE), 'utf8')), id }
++    if (await exists(path.join(dir, 'theme.css'))) return { id, name: id, kind: 'css' }
++    throw new Error('主题不存在')
++  }
++  async function renderConfig(scope = 'active', selectedId = '') {
++    const meta = await readMeta()
++    const id = scope === 'draft' ? (selectedId || meta.draftRevealTheme || meta.activeRevealTheme || 'default') : (meta.activeRevealTheme || 'default')
++    const theme = await themeInfo(id)
++    return { ...theme, scope, revision: scope === 'draft' ? meta.draftRevision : meta.activeRevision, contentUrl: theme.kind === 'html' ? `/api/studio/themes/${encodeURIComponent(id)}/html` : null }
++  }
++  async function getHtml(id) {
++    const theme = await themeInfo(id)
++    if (theme.kind !== 'html') throw new Error('该主题不是 HTML')
++    return { theme, data: await fsp.readFile(path.join(themesDir, id, 'index.html')) }
++  }
+   async function listThemes() {
+-    const names = await fsp.readdir(themesDir).catch(() => [])
+-    const meta = await readMeta()
+-    return [{ id: 'default', name: '内置主题' }, ...names.map(id => ({ id, name: id }))].map(item => ({ ...item, active: (meta.activeRevealTheme || 'default') === item.id, draft: (meta.draftRevealTheme || meta.activeRevealTheme || 'default') === item.id }))
++    const names = (await fsp.readdir(themesDir, { withFileTypes: true }).catch(() => [])).filter(x => x.isDirectory()).map(x => x.name)
++    const meta = await readMeta()
++    const items = await Promise.all(['default', ...names].map(id => themeInfo(id).catch(() => null)))
++    return items.filter(Boolean).map(({ manifest, ...item }) => ({ ...item, active: (meta.activeRevealTheme || 'default') === item.id, draft: (meta.draftRevealTheme || meta.activeRevealTheme || 'default') === item.id }))
+   }
+ 
+   async function uploadTheme(filename, data) {
+-    if (!/\.zip$/i.test(filename || '')) throw new Error('主题必须为 ZIP')
++    if (/\.html?$/i.test(filename || '')) {
++      const info = inspectHtml(data, safeName(filename))
++      const id = `html-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`
++      const temp = path.join(studioDir, 'tmp', id)
++      await fsp.mkdir(temp, { recursive: true })
++      try {
++        await fsp.writeFile(path.join(temp, 'index.html'), data)
++        await fsp.writeFile(path.join(temp, HTML_META_FILE), JSON.stringify(info, null, 2))
++        await fsp.rename(temp, path.join(themesDir, id))
++      } catch (error) { await fsp.rm(temp, { recursive: true, force: true }); throw error }
++      return { ...info, id }
++    }
++    if (!/\.zip$/i.test(filename || '')) throw new Error('请选择 CSS 主题 ZIP，或完整 .html / .htm 文件')
+     if (!data.length || data.length > 20 * 1024 * 1024) throw new Error('主题 ZIP 必须小于 20MB')
+-    const zip = new AdmZip(data)
++    const zip = await openZip(data)
+     const entries = zip.getEntries()
+     if (!entries.length || entries.length > 200) throw new Error('主题 ZIP 文件数量无效')
+     let total = 0
+@@ -228,41 +274,56 @@
+     return { id, name: id }
+   }
+ 
+-  async function selectDraftTheme(id) {
+-    if (id !== 'default' && !(await exists(path.join(themesDir, safeName(id), 'theme.css')))) throw new Error('主题不存在')
+-    const meta = await readMeta(); meta.draftRevealTheme = id; await writeMeta(meta); return status()
+-  }
+-
+-  async function deleteTheme(id) {
++  function selectDraftTheme(id) {
++    return serialize(async () => {
++      await themeInfo(id)
++      const meta = await readMeta(); meta.draftRevealTheme = id; await writeMeta(meta); return status()
++    })
++  }
++
++  function deleteTheme(id) {
++    return serialize(async () => {
++    checkThemeId(id)
++    const history = await versions()
++    if (history.some(item => item.revealTheme === id)) throw new Error('该主题被发布历史引用；保留以便回滚')
+     const meta = await readMeta()
+     if (id === 'default' || id === meta.activeRevealTheme || id === meta.draftRevealTheme) throw new Error('不能删除内置、正式或 Draft 正在使用的主题')
+     await fsp.rm(path.join(themesDir, safeName(id)), { recursive: true, force: true })
++    })
+   }
+ 
+   async function getDraftThemeCss() {
+     const meta = await readMeta(); const id = meta.draftRevealTheme || meta.activeRevealTheme || 'default'
++    if ((await themeInfo(id)).kind === 'html') return { id, kind: 'html', css: '' }
+     const file = id === 'default' ? path.join(revealDir, 'theme.css') : path.join(themesDir, id, 'theme.css')
+     return { id, css: await fsp.readFile(file, 'utf8') }
+   }
+ 
+-  async function saveDraftThemeCss(css) {
++  function saveDraftThemeCss(css) {
++    return serialize(async () => {
+     if (typeof css !== 'string' || !css.trim() || Buffer.byteLength(css) > 1024 * 1024) throw new Error('CSS 为空或超过 1MB')
+     const meta = await readMeta(); let id = meta.draftRevealTheme || meta.activeRevealTheme || 'default'
+-    if (id === 'default') {
+-      id = `custom-${Date.now().toString(36)}`
++    if ((await themeInfo(id)).kind === 'html') throw new Error('HTML 自带样式；请修改 HTML 后重新上传，不使用 CSS 编辑器')
++    if (id === 'default' || id === (meta.activeRevealTheme || 'default') || (await versions()).some(v => v.revealTheme === id)) {
++      const sourceId = id
++      id = `custom-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`
++      if (sourceId !== 'default') await fsp.cp(path.join(themesDir, sourceId), path.join(themesDir, id), { recursive: true })
+       await fsp.mkdir(path.join(themesDir, id), { recursive: true })
+       meta.draftRevealTheme = id
+     }
+     await atomicWrite(path.join(themesDir, id, 'theme.css'), css)
+     meta.draftRevealTheme = id; await writeMeta(meta)
+     return { id, status: await status() }
++    })
+   }
+ 
+   async function exportTheme(scope = 'active') {
+     const meta = await readMeta()
+     const id = scope === 'draft' ? (meta.draftRevealTheme || meta.activeRevealTheme || 'default') : (meta.activeRevealTheme || 'default')
++    const info = await themeInfo(id)
++    if (info.kind === 'html') return { id, filename: info.filename || `${id}.html`, contentType: 'text/html; charset=utf-8', data: await fsp.readFile(path.join(themesDir, id, 'index.html')) }
+     const sourceDir = id === 'default' ? revealDir : path.join(themesDir, id)
+-    const zip = new AdmZip()
++    const zip = await openZip()
+     async function addDirectory(dir, prefix = '') {
+       const entries = await fsp.readdir(dir, { withFileTypes: true })
+       for (const entry of entries) {
+@@ -302,7 +363,7 @@
+   }
+   async function uploadLcdTheme(filename, data) {
+     if (!/\.zip$/i.test(filename || '') || !data.length || data.length > 20*1024*1024) throw new Error('LCD Theme 必须为小于 20MB 的 ZIP')
+-    const zip = new AdmZip(data); const entries = zip.getEntries(); let total=0
++    const zip = await openZip(data); const entries = zip.getEntries(); let total=0
+     for (const entry of entries) { const name=entry.entryName.replace(/\\/g,'/'); const mode=(entry.attr>>>16)&0o170000; if(name.startsWith('/')||/^[A-Za-z]:/.test(name)||name.split('/').includes('..'))throw new Error('LCD Theme ZIP 包含路径穿越或绝对路径'); if(mode===0o120000)throw new Error('LCD Theme ZIP 不允许符号链接'); total+=entry.header.size; if(total>10*1024*1024)throw new Error('LCD Theme 解压内容过大'); if(!entry.isDirectory&&!/\.json$/i.test(name))throw new Error('LCD Theme ZIP 仅允许 JSON') }
+     const configEntry=entries.find(entry=>/(^|\/)lcd-theme\.json$/i.test(entry.entryName)); if(!configEntry)throw new Error('缺少 lcd-theme.json')
+     let parsed; try{parsed=JSON.parse(configEntry.getData().toString('utf8'))}catch{throw new Error('lcd-theme.json 不是有效 JSON')}
+@@ -314,5 +375,5 @@
+   async function activeLcdConfig() { const meta=await readMeta(); return lcdConfig(meta.activeLcdTheme||'default') }
+   async function draftLcdConfig() { const meta=await readMeta(); return {id:meta.draftLcdTheme||meta.activeLcdTheme||'default',config:await lcdConfig(meta.draftLcdTheme||meta.activeLcdTheme||'default')} }
+ 
+-  return { studioDir, assetsDir, themesDir, lcdThemesDir, activeFile, draftFile, init, status, getSlides, saveDraft, publish, versions, restore, listAssets, saveAsset, deleteAsset, listPortraits, savePortrait, listThemes, uploadTheme, selectDraftTheme, deleteTheme, getDraftThemeCss, saveDraftThemeCss, exportTheme, lcdConfig, listLcdThemes, saveLcdTheme, uploadLcdTheme, selectDraftLcdTheme, deleteLcdTheme, activeLcdConfig, draftLcdConfig }
++  return { themeInfo, renderConfig, getHtml, studioDir, assetsDir, themesDir, lcdThemesDir, activeFile, draftFile, init, status, getSlides, saveDraft, publish, versions, restore, listAssets, saveAsset, deleteAsset, listPortraits, savePortrait, listThemes, uploadTheme, selectDraftTheme, deleteTheme, getDraftThemeCss, saveDraftThemeCss, exportTheme, lcdConfig, listLcdThemes, saveLcdTheme, uploadLcdTheme, selectDraftLcdTheme, deleteLcdTheme, activeLcdConfig, draftLcdConfig }
+ }
+--- a/server/pptist-server.mjs
++++ b/server/pptist-server.mjs
+@@ -462,6 +462,18 @@
+         const raw = await readRawBody(req, 6 * 1024 * 1024)
+         return JSON.parse(raw.toString('utf8') || '{}')
+       }
++      if (req.method === 'GET' && pathname === '/api/studio/render-config') {
++        sendJson(res, 200, await studioService.renderConfig(url.searchParams.get('scope') === 'draft' ? 'draft' : 'active', url.searchParams.get('theme') || '')); return
++      }
++      if (req.method === 'GET' && ['/api/studio/html-runtime.js', '/api/studio/html-bridge.js'].includes(pathname)) {
++        const script = pathname.endsWith('html-bridge.js') ? 'studio-html-bridge.js' : 'studio-html-runtime.js'
++        res.setHeader('Cache-Control', 'no-store'); await serveStatic(req, res, '/' + script, __dirname); return
++      }
++      const htmlContentMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)\/html$/)
++      if (req.method === 'GET' && htmlContentMatch) {
++        const { data } = await studioService.getHtml(decodeURIComponent(htmlContentMatch[1]))
++        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'no-store' }); res.end(data); return
++      }
+       if (req.method === 'GET' && pathname === '/api/studio/slides') { sendJson(res, 200, await studioService.getSlides('draft')); return }
+       if (req.method === 'GET' && pathname === '/api/studio/slides/active') { sendJson(res, 200, await studioService.getSlides('active')); return }
+       if (req.method === 'GET' && pathname === '/api/studio/slides/draft/raw') {
+@@ -497,14 +509,24 @@
+       }
+       if (req.method === 'GET' && pathname === '/api/studio/system/status') { const render=ledRenderService.getStatus(); sendJson(res, 200, { studio: await studioService.status(), services: { server: 'running', webSocket: 'running', reveal: 'running', lcdRenderService: 'running' }, websocket: getShowFlowWsStatus(), lcd: { protocol: 'led-display/1.0', acknowledgement: '板端 ACK/心跳尚未配置回传 Topic', roles: ['manager','platform','twin','hardware'].map(role=>({role,online:null,currentRevision:render?.revision||null,imageUrl:render?.screens.find(item=>item.role===role)?.url||null,lastRender:render?.renderedAt||null,lastAck:null,lastHeartbeat:null,rssi:null})) } }); return }
+       if (req.method === 'GET' && pathname === '/api/studio/themes') { sendJson(res, 200, { themes: await studioService.listThemes() }); return }
+-      if (req.method === 'GET' && pathname === '/api/studio/themes/current/download') { const exported=await studioService.exportTheme(url.searchParams.get('scope')||'active'); res.writeHead(200,{'Content-Type':'application/zip','Content-Disposition':`attachment; filename="${exported.filename}"`,'Content-Length':exported.data.length,'Cache-Control':'no-store'});res.end(exported.data);return }
++      if (req.method === 'GET' && pathname === '/api/studio/themes/current/download') {
++        const exported = await studioService.exportTheme(url.searchParams.get('scope') || 'active')
++        res.writeHead(200, { 'Content-Type': exported.contentType || 'application/zip', 'Content-Disposition': `attachment; filename="theme.${exported.contentType ? 'html' : 'zip'}"; filename*=UTF-8''${encodeURIComponent(exported.filename)}`, 'Content-Length': exported.data.length, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' }); res.end(exported.data); return
++      }
+       if (req.method === 'GET' && pathname === '/api/studio/themes/draft/css') { sendJson(res, 200, await studioService.getDraftThemeCss()); return }
+       if (req.method === 'PUT' && pathname === '/api/studio/themes/draft/css') { const body=await readJson(); sendJson(res, 200, {ok:true,...await studioService.saveDraftThemeCss(body.css)}); return }
+-      if (req.method === 'POST' && pathname === '/api/studio/themes/upload') { const data = await readRawBody(req, 20 * 1024 * 1024); sendJson(res, 200, { ok: true, theme: await studioService.uploadTheme(decodeURIComponent(req.headers['x-filename'] || ''), data) }); return }
++      if (req.method === 'POST' && pathname === '/api/studio/themes/upload') { const data = await readRawBody(req, 32 * 1024 * 1024); sendJson(res, 200, { ok: true, theme: await studioService.uploadTheme(decodeURIComponent(req.headers['x-filename'] || ''), data) }); return }
+       const themeSelectMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)\/preview$/)
+       if (req.method === 'POST' && themeSelectMatch) { sendJson(res, 200, { ok: true, status: await studioService.selectDraftTheme(decodeURIComponent(themeSelectMatch[1])) }); return }
+       const themeFileMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)\/files\/(.+)$/)
+-      if (req.method === 'GET' && themeFileMatch) { const id = decodeURIComponent(themeFileMatch[1]); if (!/^[a-z0-9._-]+$/i.test(id)) { sendJson(res, 400, { error: '无效主题 ID' }); return } if (id === 'default') { await serveStatic(req, res, '/theme.css', REVEAL_DIR); return } await serveStatic(req, res, `/${themeFileMatch[2]}`, path.join(studioService.themesDir, id)); return }
++      if (req.method === 'GET' && themeFileMatch) {
++        const id = decodeURIComponent(themeFileMatch[1]); const info = await studioService.themeInfo(id)
++        if (info.kind === 'html') { sendJson(res, 404, { error: 'HTML 仅在隔离副屏容器内运行；请通过下载接口获取原文件' }); return }
++        const relative = decodeURIComponent(themeFileMatch[2])
++        if (relative.split('/').some(part => part.startsWith('.'))) { sendJson(res, 400, { error: '非法主题资源' }); return }
++        if (id === 'default') { await serveStatic(req, res, '/theme.css', REVEAL_DIR); return }
++        await serveStatic(req, res, `/${themeFileMatch[2]}`, path.join(studioService.themesDir, id)); return
++      }
+       const themeDeleteMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)$/)
+       if (req.method === 'DELETE' && themeDeleteMatch) { await studioService.deleteTheme(decodeURIComponent(themeDeleteMatch[1])); sendJson(res, 200, { ok: true }); return }
+       if (req.method === 'GET' && pathname === '/api/studio/lcd/themes') { sendJson(res,200,{themes:await studioService.listLcdThemes()}); return }
+@@ -757,6 +779,14 @@
+       return
+     }
+     if (pathname.startsWith('/reveal/')) {
++      if (req.method === 'GET' && (pathname === '/reveal/' || pathname === '/reveal/index.html') && !url.searchParams.has('md') && url.searchParams.get('content') !== 'markdown') {
++        const config = await studioService.renderConfig(url.searchParams.get('studio') === 'draft' ? 'draft' : 'active', url.searchParams.get('studioTheme') || '')
++        if (config.kind === 'html') {
++          const shell = await fsp.readFile(path.join(__dirname, 'studio-html-runtime.html'))
++          res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(shell); return
++        }
++      }
++
+       if (pathname === '/reveal/slides.md') {
+         const { markdown } = await studioService.getSlides('active')
+         res.writeHead(200, { 'Content-Type': MIME['.md'], 'Cache-Control': 'no-store' }); res.end(markdown); return
+@@ -774,7 +804,7 @@
+       }
+       if (pathname === '/reveal/theme.css') {
+         const meta = await studioService.status()
+-        if (meta.activeRevealTheme && meta.activeRevealTheme !== 'default') { await serveStatic(req, res, '/theme.css', path.join(studioService.themesDir, meta.activeRevealTheme)); return }
++        if (meta.activeRevealTheme && meta.activeRevealTheme !== 'default' && (await studioService.themeInfo(meta.activeRevealTheme)).kind === 'css') { await serveStatic(req, res, '/theme.css', path.join(studioService.themesDir, meta.activeRevealTheme)); return }
+       }
+       const themeAssetExt = path.extname(pathname).toLowerCase()
+       if (['.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.woff', '.woff2'].includes(themeAssetExt)) {
+--- /dev/null
++++ b/server/studio-html.mjs
+@@ -0,0 +1,84 @@
++/** HTML content support for the EXISTING Studio theme library.
++ * Uploaded scripts are never evaluated on the server. Only application/json
++ * metadata is parsed; execution happens in an opaque-origin browser sandbox.
++ */
++import crypto from 'node:crypto'
++
++export const HTML_MAX_BYTES = 32 * 1024 * 1024
++export const HTML_META_FILE = '.showflow-html.json'
++const ROLES = ['manager', 'platform', 'twin', 'hardware']
++
++function jsonBlock(html, id) {
++  const scripts = html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)
++  for (const [, attrs, body] of scripts) {
++    const attributes = Object.fromEntries([...attrs.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map(m => [m[1].toLowerCase(), m[2] ?? m[3]]))
++    if (attributes.id !== id) continue
++    if (attributes.type?.toLowerCase() !== 'application/json') throw new Error(`${id} 必须为 application/json；不执行上传脚本`)
++    try { return JSON.parse(body) } catch { throw new Error(`${id} 不是有效 JSON`) }
++  }
++  return null
++}
++function text(value, max = 160) { return typeof value === 'string' ? value.trim().slice(0, max) : '' }
++function lcdSnapshot(raw, pageId) {
++  if (!raw) return null
++  const tasks = Object.fromEntries(ROLES.map(role => [role, { task: text(raw.roles?.[role]?.task, 240) }]))
++  return {
++    source: { type: 'reveal-md', pageId }, // preserve the existing LCD schema
++    stage: text(raw.stage, 100),
++    lead: ROLES.includes(raw.lead) ? raw.lead : null,
++    active: ROLES.filter(role => Array.isArray(raw.active) && raw.active.includes(role)),
++    roles: tasks,
++  }
++}
++export function validateHtmlManifest(input) {
++  if (!Array.isArray(input) || !input.length || input.length > 500) throw new Error('HTML 页面清单必须包含 1—500 页')
++  const ids = new Set()
++  return input.map((p, i) => {
++    if (!p || typeof p !== 'object') throw new Error('页面清单项无效')
++    const id = text(p.id, 160)
++    if (!id || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/.test(id) || ids.has(id)) throw new Error(`HTML 稳定页面 ID 缺失、重复或非法：${id}`)
++    ids.add(id)
++    return { id, index: i + 1, title: text(p.title) || `页面 ${i + 1}`, subtitle: text(p.subtitle, 240), stage: text(p.stage, 100), tabletScene: text(p.tabletScene, 100) || undefined, lcd: lcdSnapshot(p.lcd, id) }
++  })
++}
++
++export function inspectHtml(data, filename = 'page.html') {
++  if (!Buffer.isBuffer(data) || !data.length || data.length > HTML_MAX_BYTES) throw new Error('HTML 必须为小于 32MB 的非空文件')
++  let html
++  try { html = new TextDecoder('utf-8', { fatal: true }).decode(data) } catch { throw new Error('HTML 必须使用 UTF-8 编码') }
++  if (html.includes('\0') || !/<html\b/i.test(html) || !/<body\b/i.test(html)) throw new Error('请上传完整 HTML 文档（包含 html 和 body）')
++  const custom = jsonBlock(html, 'showflow-manifest')
++  const flow = jsonBlock(html, 'flow-data')
++  let adapter = 'static', pages, warning = ''
++  if (custom) {
++    if (custom.format !== 'showflow-html/1.0' || !['showflow', 'zhizheng', 'static'].includes(custom.adapter)) throw new Error('showflow-manifest 的 format / adapter 不受支持')
++    adapter = custom.adapter
++    pages = custom.pages
++    if (adapter === 'static' && pages?.length !== 1) throw new Error('静态 HTML 只能声明一页；多页必须提供控制接口')
++  }
++  else if (flow) {
++    if (!Array.isArray(flow.pages) || !Array.isArray(flow.chapters) || !Array.isArray(flow.team) || !/window\.ZhizhengFlow\s*=/.test(html)) throw new Error('flow-data 不完整，或缺少 ZhizhengFlow 控制接口')
++    adapter = 'zhizheng'
++    pages = flow.pages.map((p, i) => {
++      if (p.index !== undefined && p.index !== i) throw new Error('flow-data 的 index 必须与实际页面顺序一致')
++      const chapter = flow.chapters[p.chapter ?? Math.max(0, p.checkpoint ?? 0)]
++      const stage = p.kind === 'cover' || p.kind === 'team' ? '项目介绍' : p.kind === 'closing' ? '工作完成' : text(chapter?.title)
++      const taskList = p.team || []
++      return {
++        id: p.id, title: p.title, stage, subtitle: p.desc || '',
++        lcd: p.kind === 'detail' ? {
++          stage, lead: ROLES[p.lead] || null,
++          active: ROLES.filter((_, roleIndex) => !!taskList[roleIndex]),
++          roles: Object.fromEntries(ROLES.map((role, roleIndex) => [role, { task: taskList[roleIndex] || '' }])),
++        } : null,
++      }
++    })
++  }
++  else {
++    const title = /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1] || filename.replace(/\.html?$/i, '')
++    pages = [{ id: 'html-page', title }]
++    warning = '未发现多页控制清单，按单页 HTML 显示；不是自动识别到多页。智证先锋最终版可自动识别全部 16 页。'
++  }
++  const manifest = validateHtmlManifest(pages)
++  return { kind: 'html', adapter, manifest, pageCount: manifest.length, filename, name: filename.replace(/\.html?$/i, ''), fingerprint: crypto.createHash('sha256').update(data).digest('hex'), warning }
++}
+--- /dev/null
++++ b/server/studio-html-runtime.html
+@@ -0,0 +1,8 @@
++<!doctype html>
++<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ShowFlow · HTML 副屏</title>
++<style>
++*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#061832;color:#dff6ff;font-family:system-ui,'Microsoft YaHei',sans-serif}#stage{position:absolute;inset:0}#stage iframe{width:100%;height:100%;border:0;display:block}#status{position:fixed;inset:0;display:grid;place-content:center;gap:14px;text-align:center;padding:40px;z-index:10;background:#061832}#status[hidden]{display:none}#status strong{font-size:24px}#status p{max-width:700px;white-space:pre-wrap;line-height:1.6}#status button{justify-self:center}button,select{font:inherit;padding:8px 12px;border:1px solid #419acc;border-radius:5px;background:#133e67;color:white;cursor:pointer}#tools{position:fixed;top:0;right:0;left:0;display:flex;align-items:center;gap:8px;background:rgba(2,15,35,.95);padding:10px 16px;z-index:20;transform:translateY(calc(-100% + 7px));transition:transform .15s}#tools:hover,#tools:focus-within,body.preview #tools{transform:none}#tools .spacer{flex:1}#page-picker{max-width:45vw}body.preview #stage{top:58px}#update{display:none;border-color:#ffd16b;color:#ffe2a2}#connection{font-size:12px;color:#91b9d2;white-space:nowrap}#retry{display:none}#status.failed #retry{display:block}
++</style></head><body>
++<div id="stage"></div><div id="status"><strong id="status-title">正在加载流程网页</strong><p id="status-text">请稍候</p><button id="retry">重新加载</button></div>
++<nav id="tools" aria-label="副屏工具"><button id="prev">上一页</button><select id="page-picker" aria-label="选择流程画面"></select><button id="next">下一页</button><span class="spacer"></span><span id="connection"></span><button id="update">已发布新版 · 点击载入</button><button id="full">全屏</button></nav>
++<script src="/api/studio/html-runtime.js"></script></body></html>
+--- /dev/null
++++ b/server/studio-html-runtime.js
+@@ -0,0 +1,148 @@
++/* Host side of the Studio HTML renderer. It is the existing secondary role,
++   not an alternate PPT player. Draft/thumbnail mode NEVER registers a role. */
++(() => {
++  'use strict';
++  const params = new URLSearchParams(location.search);
++  const preview = params.get('studio') === 'draft' || params.has('thumb');
++  document.body.classList.toggle('preview', preview);
++  const $ = id => document.getElementById(id);
++  let config, frame, token, rendered = null, ws, stopped = false, sessionId = null;
++  let retryDelay = 1000, retryTimer, heartbeat, updateTimer, captureTimer;
++  let joined = false, readyResolve, readyReject;
++  const completed = new Map(), inFlight = new Map(), requests = new Map(), captures = new Set();
++  const requestId = () => { const a = new Uint32Array(4); crypto.getRandomValues(a); return [...a].map(n => n.toString(16)).join(''); };
++  function fail(message) { $('status-title').textContent = '流程网页加载失败'; $('status-text').textContent = message; $('status').hidden = false; $('status').classList.add('failed'); }
++  function updateState(state) {
++    if (!state || !Number.isInteger(state.pageIndex) || config.manifest[state.pageIndex]?.id !== state.pageId || state.pageCount !== config.manifest.length) throw new Error('副屏状态不在已发布清单内');
++    rendered = state; $('page-picker').value = state.pageId;
++    $('prev').disabled = state.pageIndex === 0; $('next').disabled = state.pageIndex === config.manifest.length - 1;
++  }
++  const getConfig = async () => {
++    const q = new URLSearchParams({ scope: preview ? 'draft' : 'active' });
++    if (preview && params.get('studioTheme')) q.set('theme', params.get('studioTheme'));
++    const r = await fetch('/api/studio/render-config?' + q, { cache: 'no-store' });
++    if (!r.ok) throw new Error('读取 Studio 页面配置失败');
++    return r.json();
++  };
++  async function load() {
++    config = await getConfig();
++    if (config.kind !== 'html') { location.reload(); return; }
++    token = requestId();
++    const results = await Promise.all([config.contentUrl, '/api/studio/html-bridge.js', '/reveal/vendor/html-to-image.js'].map(async url => { const r = await fetch(url, { cache: 'no-store' }); if (!r.ok) throw new Error('读取页面资源失败'); return r.text(); }));
++    const [html, bridge, captureLib] = results;
++    const doc = new DOMParser().parseFromString(html, 'text/html');
++    doc.querySelectorAll('base,meta[http-equiv]').forEach(el => el.remove());
++    const policy = doc.createElement('meta');
++    policy.httpEquiv = 'Content-Security-Policy';
++    policy.content = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'";
++    doc.head.prepend(policy);
++    const data = doc.createElement('script'); data.id = 'showflow-bridge-config'; data.type = 'application/json';
++    data.textContent = JSON.stringify({ token, parentOrigin: location.origin, adapter: config.adapter, manifest: config.manifest }).replace(/</g, '\\u003c');
++    const capture = doc.createElement('script'); capture.textContent = captureLib.replace(/<\/script/gi, '<\\/script');
++    const script = doc.createElement('script'); script.textContent = bridge;
++    doc.body.append(data, capture, script);
++    frame = document.createElement('iframe'); frame.title = 'ShowFlow 流程图';
++    frame.setAttribute('sandbox', 'allow-scripts'); // deliberately no allow-same-origin
++    frame.setAttribute('allow', 'fullscreen *');
++    frame.referrerPolicy = 'no-referrer';
++    const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
++    const timeout = setTimeout(() => readyReject(new Error('HTML 15 秒内未就绪，请检查控制接口或缺失资源')), 15000);
++    frame.srcdoc = '<!doctype html>\n' + doc.documentElement.outerHTML;
++    $('stage').replaceChildren(frame);
++    $('page-picker').replaceChildren(...config.manifest.map(p => { const opt = document.createElement('option'); opt.value = p.id; opt.textContent = `${String(p.index).padStart(2, '0')} · ${p.title}`; return opt; }));
++    try { await ready; } finally { clearTimeout(timeout); }
++    if (preview) {
++      const index = Math.max(0, Math.min(config.manifest.length - 1, Number(params.get('studioPage') || 0)));
++      if (Number.isInteger(index) && index) await navigate(config.manifest[index].id);
++      $('connection').textContent = 'Draft 预览 · 不发送联动消息';
++    }
++    $('status').hidden = true;
++    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
++    if (!preview) connect();
++    updateTimer = setInterval(async () => {
++      if (preview) return;
++      try { const next = await getConfig(); if (next.id !== config.id || next.fingerprint !== config.fingerprint || next.kind !== 'html') $('update').style.display = 'block'; } catch { /* keep current content offline */ }
++    }, 4000);
++  }
++  window.addEventListener('message', e => {
++    if (!frame || e.source !== frame.contentWindow || e.origin !== 'null' || e.data?.token !== token) return;
++    const msg = e.data;
++    try {
++      if (msg.type === 'sf-html:ready') { updateState(msg.state); readyResolve?.(); }
++      if (msg.type === 'sf-html:state') { updateState(msg.state); scheduleCapture(); }
++      if (msg.type === 'sf-html:rendered') {
++        const task = requests.get(msg.requestId); if (!task) return;
++        updateState(msg.state);
++        if (msg.state.pageId !== task.pageId || msg.state.overlay) throw new Error('收到的渲染确认与目标不一致');
++        clearTimeout(task.timer); requests.delete(msg.requestId); task.resolve(msg.state);
++      }
++      if (msg.type === 'sf-html:error') {
++        const task = requests.get(msg.requestId);
++        if (task) { clearTimeout(task.timer); requests.delete(msg.requestId); task.reject(new Error(msg.message || 'HTML 跳页失败')); }
++        else if (!rendered) readyReject?.(new Error(msg.message));
++      }
++      if (msg.type === 'sf-html:capture-result' && captures.delete(msg.requestId) && rendered?.pageId === msg.pageId && typeof msg.image === 'string' && msg.image.startsWith('data:image/jpeg;base64,') && msg.image.length < 7 * 1024 * 1024 && !preview && joined) {
++        fetch('/monitor-api/screen/secondary', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page: rendered.pageIndex + 1, total: config.manifest.length, image: msg.image }) }).catch(() => {});
++      }
++    } catch (error) { if (!rendered) readyReject?.(error); }
++  });
++  function navigate(pageId) {
++    if (!config.manifest.some(p => p.id === pageId)) return Promise.reject(new Error('PAGE_NOT_FOUND: ' + pageId));
++    const id = requestId();
++    return new Promise((resolve, reject) => {
++      const timer = setTimeout(() => { requests.delete(id); reject(new Error('副屏渲染确认超时')); }, 5000);
++      requests.set(id, { pageId, timer, resolve, reject });
++      frame.contentWindow.postMessage({ type: 'sf-html:goto', token, pageId, requestId: id }, '*'); // opaque frame: exact origin is unavailable; source+token validated
++    });
++  }
++  function send(msg) { if (ws?.readyState === 1) ws.send(JSON.stringify({ ...msg, role: 'secondary', sessionId })); }
++  function scheduleCapture() {
++    if (preview || !joined || ws?.readyState !== 1) return;
++    clearTimeout(captureTimer);
++    captureTimer = setTimeout(() => { const id = requestId(); captures.clear(); captures.add(id); frame.contentWindow.postMessage({ type: 'sf-html:capture', token, requestId: id }, '*'); }, 260);
++  }
++  async function command(msg) {
++    if (msg.sessionId && msg.sessionId !== sessionId) { sessionId = msg.sessionId; completed.clear(); }
++    const pageId = msg.pageId || msg.state?.secondaryPageId;
++    if (!pageId) return; // keep means keep; no guessed first page
++    joined = true;
++    const commandSession = sessionId;
++    const key = commandSession + ':' + (msg.commandId || requestId());
++    let ownsRequest = false;
++    try {
++      if (completed.has(key)) {
++        const previous = completed.get(key);
++        if (previous !== pageId) throw new Error('同一 commandId 的目标不一致');
++        if (msg.commandId) send({ type: 'ACK', commandId: msg.commandId, pageId, rendered: true });
++        return;
++      }
++      const pending = inFlight.get(key);
++      if (pending && pending.pageId !== pageId) throw new Error('同一 commandId 的目标不一致');
++      if (!pending) { inFlight.set(key, { pageId, task: navigate(pageId) }); ownsRequest = true; }
++      const state = await inFlight.get(key).task;
++      if (commandSession !== sessionId) return; // superseded by a newer session
++      completed.set(key, pageId); if (completed.size > 64) completed.delete(completed.keys().next().value);
++      if (msg.commandId) send({ type: 'ACK', commandId: msg.commandId, pageId: state.pageId, rendered: true });
++      scheduleCapture();
++    } catch (error) { if (commandSession === sessionId) send({ type: 'ERROR', commandId: msg.commandId, code: config.manifest.some(p => p.id === pageId) ? 'HTML_RENDER_FAILED' : 'PAGE_NOT_FOUND', message: error.message }); }
++    finally { if (ownsRequest) inFlight.delete(key); }
++  }
++  function connect() {
++    if (preview || stopped) return;
++    $('connection').textContent = '正在连接原双屏控制台';
++    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/showflow`);
++    ws.onopen = () => { retryDelay = 1000; $('connection').textContent = '副屏已连接 · 由 ShowFlow 编排控制'; send({ type: 'HELLO', meta: { screen: 'studio-html', url: location.pathname, theme: config.id } }); heartbeat = setInterval(() => send({ type: 'PING' }), 2000); };
++    ws.onmessage = e => { let msg; try { msg = JSON.parse(e.data); } catch { return; } if (msg.type === 'PING') send({ type: 'PONG' }); if (msg.type === 'NAVIGATE' || msg.type === 'SYNC_STATE') void command(msg); };
++    ws.onerror = () => ws.close();
++    ws.onclose = () => { clearInterval(heartbeat); $('connection').textContent = '联动连接中断 · 保留当前画面'; if (!stopped) { retryTimer = setTimeout(connect, retryDelay); retryDelay = Math.min(30000, retryDelay * 2); } };
++  }
++  const change = offset => { if (rendered) { const p = config.manifest[rendered.pageIndex + offset]; if (p) navigate(p.id).catch(e => fail(e.message)); } };
++  $('prev').onclick = () => change(-1); $('next').onclick = () => change(1);
++  $('page-picker').onchange = e => navigate(e.target.value).catch(error => fail(error.message));
++  $('full').onclick = () => document.documentElement.requestFullscreen?.().catch(() => {});
++  $('update').onclick = () => location.reload(); $('retry').onclick = () => location.reload();
++  window.addEventListener('beforeunload', () => { stopped = true; clearInterval(heartbeat); clearInterval(updateTimer); clearTimeout(retryTimer); clearTimeout(captureTimer); ws?.close(); });
++  // Existing integrations may inspect SecondScreen; do not overwrite the PPT interface.
++  window.SecondScreen = { getManifest: () => config?.manifest || [], gotoById: id => navigate(id), showflowStatus: () => ({ connected: ws?.readyState === 1, sessionId, manifest: config?.manifest || [] }), getCurrentPageId: () => rendered?.pageId || null };
++  load().catch(error => fail(error.message));
++})();
+--- /dev/null
++++ b/server/studio-html-bridge.js
+@@ -0,0 +1,74 @@
++/* Runs only INSIDE the opaque-origin HTML frame. No networking or host access. */
++(() => {
++  'use strict';
++  const cfg = JSON.parse(document.getElementById('showflow-bridge-config').textContent);
++  const manifest = cfg.manifest;
++  const report = (type, extra = {}) => parent.postMessage({ type, token: cfg.token, ...extra }, cfg.parentOrigin === 'null' ? '*' : cfg.parentOrigin);
++  const frames = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
++  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
++  let booted = false, lastId = null, serial = Promise.resolve();
++  function state() {
++    if (cfg.adapter === 'zhizheng') {
++      const raw = window.ZhizhengFlow.getState();
++      const index = raw.pageIndex;
++      if (!Number.isInteger(index) || !manifest[index] || raw.pageId !== manifest[index].id || raw.pageCount !== manifest.length) throw new Error('HTML 实际页码与上传清单不一致');
++      return { pageId: manifest[index].id, pageIndex: index, pageCount: manifest.length, overlay: !!raw.overviewOverlay, activeWorkers: raw.activeWorkers || [] };
++    }
++    if (cfg.adapter === 'showflow') {
++      const id = window.ShowFlowPage.getCurrentPageId();
++      const index = manifest.findIndex(p => p.id === id);
++      if (index < 0) throw new Error('ShowFlowPage 返回了清单外的页面 ID');
++      return { pageId: id, pageIndex: index, pageCount: manifest.length };
++    }
++    return { pageId: manifest[0].id, pageIndex: 0, pageCount: 1 };
++  }
++  async function navigate(pageId) {
++    const index = manifest.findIndex(p => p.id === pageId);
++    if (index < 0) throw new Error('页面 ID 不存在');
++    const before = state();
++    if (before.pageId !== pageId || before.overlay) {
++      if (cfg.adapter === 'zhizheng') {
++        const result = await window.ZhizhengFlow.goTo(index);
++        if (result === false) throw new Error('HTML 拒绝跳页');
++      } else if (cfg.adapter === 'showflow') await window.ShowFlowPage.gotoById(pageId);
++    }
++    await frames(); // ACK must follow rendering, not merely receiving a command.
++    const result = state();
++    if (result.pageId !== pageId || result.overlay) throw new Error('页面没有完成目标切换');
++    return result;
++  }
++  window.addEventListener('message', e => {
++    if (e.source !== parent || e.origin !== cfg.parentOrigin || e.data?.token !== cfg.token || !booted) return;
++    const msg = e.data;
++    if (msg.type === 'sf-html:goto' && typeof msg.requestId === 'string' && typeof msg.pageId === 'string') {
++      serial = serial.catch(() => {}).then(async () => {
++        try { const result = await navigate(msg.pageId); report('sf-html:rendered', { requestId: msg.requestId, state: result }); }
++        catch (error) { report('sf-html:error', { requestId: msg.requestId, message: error.message }); }
++      });
++    }
++    if (msg.type === 'sf-html:capture' && typeof msg.requestId === 'string' && window.htmlToImage) {
++      const current = state();
++      window.htmlToImage.toJpeg(document.getElementById('app') || document.body, { quality: .72, pixelRatio: .5, backgroundColor: '#071b38', skipFonts: true }).then(image => {
++        if (image.length < 7 * 1024 * 1024) report('sf-html:capture-result', { requestId: msg.requestId, pageId: current.pageId, image });
++      }).catch(() => {});
++    }
++  });
++  async function boot() {
++    try {
++      for (let count = 0; count < 100; count++) {
++        if (cfg.adapter === 'static' || (cfg.adapter === 'zhizheng' && window.ZhizhengFlow?.goTo && window.ZhizhengFlow?.getState) || (cfg.adapter === 'showflow' && window.ShowFlowPage?.gotoById && window.ShowFlowPage?.getCurrentPageId)) break;
++        await delay(100);
++      }
++      if (document.fonts?.ready) await Promise.race([document.fonts.ready, delay(1200)]);
++      await Promise.all([...document.images].map(img => img.complete ? Promise.resolve() : Promise.race([new Promise(resolve => { img.addEventListener('load', resolve, { once: true }); img.addEventListener('error', resolve, { once: true }); }), delay(1800)])));
++      await frames();
++      const result = state();
++      booted = true; lastId = result.pageId;
++      report('sf-html:ready', { state: result });
++      setInterval(() => {
++        try { const current = state(); if (current.pageId !== lastId) { lastId = current.pageId; report('sf-html:state', { state: current }); } } catch { /* next navigation returns a visible error */ }
++      }, 200);
++    } catch (error) { report('sf-html:error', { message: 'HTML 控制接口未就绪：' + error.message }); }
++  }
++  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true }); else boot();
++})();
+--- a/src/views/Studio/index.vue
++++ b/src/views/Studio/index.vue
+@@ -24,6 +24,7 @@
+ 
+       <section class="preview">
+         <div class="section-head"><b>Draft 实时预览</b><span>约 1 秒更新</span></div>
++        <p v-if="draftIsHtml" class="html-markdown-note">此处仍编辑原 Markdown；HTML 的内容和照片请修改原文件后在“页面主题”重新上传。</p>
+         <iframe :key="previewKey" :src="previewUrl"></iframe>
+       </section>
+ 
+@@ -75,8 +76,22 @@
+     </main>
+     <main v-else-if="module === 'system'" class="simple"><h2>系统状态</h2><button @click="loadSystem">刷新状态</button><div class="status-grid"><article v-for="(value, key) in system?.services" :key="key"><b>{{ key }}</b><span>{{ value }}</span></article></div><h3>WebSocket 客户端</h3><div class="status-grid"><article v-for="(item,key) in system?.websocket?.roles" :key="key"><b>{{key}} · {{item.online?'在线':'离线'}}</b><small>连接数 {{item.connections}}</small><small>最后消息 {{formatTime(item.lastSeen)}}</small><small>最后 ACK {{formatTime(item.lastAck)}}</small><small>最后心跳 {{formatTime(item.lastHeartbeat)}}</small></article></div><h3>四块 LCD</h3><div class="status-grid"><article v-for="role in system?.lcd?.roles" :key="role.role"><b>{{role.role}}</b><small>revision {{role.currentRevision || '—'}}</small><small>最近渲染 {{formatTime(role.lastRender)}}</small><small>ACK / 心跳 / RSSI：{{role.lastAck || '未回传'}} / {{role.lastHeartbeat || '未回传'}} / {{role.rssi || '未回传'}}</small><small :title="role.imageUrl">{{role.imageUrl || '暂无图片'}}</small></article></div><p>{{system?.lcd?.acknowledgement}}</p><h3>版本</h3><pre>{{ JSON.stringify(system?.studio || {}, null, 2) }}</pre></main>
+     <main v-else class="theme-page">
+-      <section class="theme-list"><h2>Reveal 页面主题</h2><p>上传只加入主题库；“设为 Draft”后可预览，点击顶部发布才影响正式页面。</p><div class="download-actions"><a href="/api/studio/themes/current/download?scope=active">下载当前正式主题</a><a href="/api/studio/themes/current/download?scope=draft">下载 Draft 主题</a></div><input type="file" accept=".zip" @change="uploadTheme" /><article v-for="theme in themes" :key="theme.id" :class="{chosen:theme.draft}"><span><b>{{ theme.name }}</b><small>{{ theme.active ? '当前正式' : theme.draft ? 'Draft 预览' : '' }}</small></span><div><button @click="selectTheme(theme.id)">设为 Draft</button><button v-if="theme.id !== 'default' && !theme.active && !theme.draft" class="danger" @click="deleteTheme(theme.id)">删除</button></div></article></section>
+-      <section class="theme-preview"><h3>Draft Theme 预览</h3><iframe :key="previewKey" :src="previewUrl"></iframe><details><summary>CSS 高级编辑</summary><textarea v-model="themeCss" spellcheck="false"></textarea><button @click="saveThemeCss">保存 CSS Draft</button></details></section>
++      <section class="theme-list">
++        <h2>页面主题 · CSS / HTML</h2>
++        <p>在同一入口上传 CSS 主题 ZIP 或完整 HTML。上传只加入主题库；“设为 Draft”后预览，顶部发布后用于流程副屏，主屏 PPT 不变。</p>
++        <div class="download-actions"><a href="/api/studio/themes/current/download?scope=active">下载当前正式文件</a><a href="/api/studio/themes/current/download?scope=draft">下载 Draft 文件</a></div>
++        <input type="file" accept=".zip,.html,.htm" :disabled="themeUploading" @change="uploadTheme" />
++        <p class="theme-hint">{{themeUploading ? '正在上传与识别页面…' : 'CSS ZIP ≤20MB；自包含 HTML ≤32MB。已支持智证先锋最终版的 16 页自动识别。'}}</p>
++        <article v-for="theme in themes" :key="theme.id" :class="{chosen:theme.draft}">
++          <span><b>{{ theme.name }}</b><small>{{theme.kind === 'html' ? `HTML · ${theme.pageCount} 个画面` : 'CSS 主题'}}</small><small>{{ theme.active ? '当前正式' : theme.draft ? 'Draft 预览' : '' }}</small><small v-if="theme.warning">{{theme.warning}}</small></span>
++          <div><button :disabled="saving || themeUploading" @click="selectTheme(theme.id)">设为 Draft</button><button v-if="theme.id !== 'default' && !theme.active && !theme.draft" class="danger" @click="deleteTheme(theme.id)">删除</button></div>
++        </article>
++      </section>
++      <section class="theme-preview"><h3>{{draftIsHtml ? 'HTML Draft 预览 · 原流程副屏' : 'Draft Theme 预览'}}</h3>
++        <iframe :key="previewKey" :src="previewUrl" allow="fullscreen" allowfullscreen></iframe>
++        <p v-if="draftIsHtml" class="html-theme-note">HTML 自带布局、样式与交互。这里的预览不会注册副屏、不会触发主屏或 LCD；发布后用原 /reveal/ 副屏。回到 ShowFlow 重载清单并核对稳定页面 ID，不按新旧页号自动配对。</p>
++        <details v-else><summary>CSS 高级编辑</summary><textarea v-model="themeCss" spellcheck="false"></textarea><button @click="saveThemeCss">保存 CSS Draft</button></details>
++      </section>
+     </main>
+ 
+     <!-- 新增页面：排版模板选择器（缩略图为真实渲染的迷你 reveal） -->
+@@ -128,7 +143,13 @@
+ const pages = computed(() => splitPages().map((text, index) => ({ text, index, title: titleOf(text), key: text.match(/data-page-id="([^"]+)"/)?.[1] || `${index}-${titleOf(text)}` })))
+ const filteredPages = computed(() => pages.value.filter(p => !query.value || p.title.toLowerCase().includes(query.value.toLowerCase())))
+ const current = computed(() => pages.value[selected.value])
+-const previewUrl = computed(() => `/reveal/?studio=draft&studioPage=${selected.value}&studioTheme=${encodeURIComponent(status.value?.draftRevealTheme || status.value?.activeRevealTheme || 'default')}`)
++const themeUploading = ref(false)
++const draftIsHtml = computed(() => themes.value.find(t => t.id === (status.value?.draftRevealTheme || status.value?.activeRevealTheme))?.kind === 'html')
++const previewUrl = computed(() => {
++  const theme = status.value?.draftRevealTheme || status.value?.activeRevealTheme || 'default'
++  const editingMarkdown = module.value === 'slides'
++  return `/reveal/?studio=draft&studioPage=${editingMarkdown ? selected.value : 0}&studioTheme=${encodeURIComponent(editingMarkdown && draftIsHtml.value ? 'default' : theme)}${editingMarkdown ? '&content=markdown' : ''}`
++})
+ const attrs = (text: string) => Object.fromEntries([...text.matchAll(/(?:data-)?([a-z0-9-]+)="([^"]*)"/g)].map(m => [m[1], m[2]]))
+ function syncForm() {
+   const text = current.value?.text || ''; const a = attrs(text); const lines = text.replace(/<!--\s*\.slide:[\s\S]*?-->/, '').trim().split('\n')
+@@ -149,8 +170,19 @@
+ }
+ watch(selected, syncForm); watch(mode, value => { if (value === 'visual') syncForm() }); watch(markdown, () => { if (mode.value === 'markdown') scheduleSave() })
+ function scheduleSave() { saveLabel.value = '未保存'; clearTimeout(timer); timer = window.setTimeout(saveNow, 800) }
+-async function saveNow() { clearTimeout(timer); saving.value = true; try { const r = await fetch('/api/studio/slides', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ markdown: markdown.value }) }); const data = await r.json(); if (!r.ok) throw new Error(data.error); status.value = data.status; saveLabel.value = '已保存为草稿'; previewKey.value++ } catch (e: any) { saveLabel.value = `保存失败：${e.message}` } finally { saving.value = false } }
+-async function publish() { if (!confirm('确认将当前 Draft 发布为正式版本？当前播放不会被强制跳页。')) return; await saveNow(); const r = await fetch('/api/studio/publish', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); const data = await r.json(); status.value = data.status; saveLabel.value = '已发布'; await loadVersions() }
++async function saveNow() { clearTimeout(timer); saving.value = true; try { const r = await fetch('/api/studio/slides', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ markdown: markdown.value }) }); const data = await r.json(); if (!r.ok) throw new Error(data.error); status.value = data.status; saveLabel.value = '已保存为草稿'; previewKey.value++; return true } catch (e: any) { saveLabel.value = `保存失败：${e.message}`; return false } finally { saving.value = false } }
++async function publish() {
++  if (!confirm('确认发布当前 Draft？只更新流程副屏，不替换主屏 PPT。正在播放的副屏保持当前画面，新版可手动载入；首次切换 HTML 后请核对编排节点。')) return
++  if (module.value === 'slides' && !(await saveNow())) return
++  saving.value = true
++  try {
++    const r = await fetch('/api/studio/publish', {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
++    const data = await r.json(); if (!r.ok) throw new Error(data.error || '发布失败')
++    status.value = data.status; saveLabel.value = '已发布'; await loadVersions(); await loadThemes()
++    message.success('发布成功；副屏使用新版前请重载清单并核对编排')
++  } catch (error:any) { message.error(error.message || '发布失败，正式版本未切换') }
++  finally { saving.value = false }
++}
+ function setPages(list: string[]) { markdown.value = list.join('\n\n---\n\n') + '\n'; selected.value = Math.min(selected.value, list.length - 1); scheduleSave(); syncForm() }
+ function addPage() { const list = splitPages(); list.push(`<!-- .slide: class="action" data-page-id="studio-${Date.now().toString(36)}" data-stage="" data-active="" data-collab="" -->\n# 新页面\n请输入副标题`); selected.value = list.length - 1; setPages(list) }
+ function duplicate() { const list = splitPages(); if (!list[selected.value]) return; list.splice(selected.value + 1, 0, list[selected.value].replace(/data-page-id="[^"]+"/, `data-page-id="studio-${Date.now().toString(36)}"`)); selected.value++; setPages(list) }
+@@ -175,7 +207,7 @@
+   setPages(list)
+   selected.value = insertAt
+ }
+-function go(id: string) { history.pushState({}, '', `/studio/${id}`); module.value = id; if (id === 'assets') loadAssets(); if (id === 'theme') loadThemes(); if(id==='lcd')loadLcdThemes(); if (id === 'system') loadSystem() }
++function go(id: string) { history.pushState({}, '', `/studio/${id}`); module.value = id; if (id === 'assets') loadAssets(); if (id === 'theme' || id === 'slides') loadThemes(); if(id==='lcd')loadLcdThemes(); if (id === 'system') loadSystem() }
+ 
+ // ---- 四岗位头像与页面图片替换 ----
+ const portraits = ref<any[]>([])
+@@ -233,11 +265,35 @@
+ async function deleteAsset(id:string) { if (!confirm(`确认删除 ${id}？`)) return; await fetch(`/api/studio/assets/${encodeURIComponent(id)}`, {method:'DELETE'}); await loadAssets() }
+ function copy(value:string) { navigator.clipboard.writeText(value.startsWith('/') ? `${location.origin}${value}` : value) }
+ async function loadSystem() { system.value = await (await fetch('/api/studio/system/status')).json() }
+-async function loadThemes() { themes.value = (await (await fetch('/api/studio/themes')).json()).themes; themeCss.value=(await (await fetch('/api/studio/themes/draft/css')).json()).css }
+-async function uploadTheme(event:Event) { const input=event.target as HTMLInputElement,file=input.files?.[0]; if(!file)return; const r=await fetch('/api/studio/themes/upload',{method:'POST',headers:{'X-Filename':encodeURIComponent(file.name)},body:file}); const data=await r.json(); if(!r.ok){alert(data.error);return} input.value=''; await loadThemes() }
+-async function selectTheme(id:string) { const data=await (await fetch(`/api/studio/themes/${encodeURIComponent(id)}/preview`,{method:'POST'})).json(); status.value=data.status; previewKey.value++; await loadThemes() }
+-async function deleteTheme(id:string) { if(!confirm(`确认删除主题 ${id}？`))return; const r=await fetch(`/api/studio/themes/${encodeURIComponent(id)}`,{method:'DELETE'}); if(!r.ok)alert((await r.json()).error); await loadThemes() }
+-async function saveThemeCss(){const data=await(await fetch('/api/studio/themes/draft/css',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({css:themeCss.value})})).json();status.value=data.status;previewKey.value++;await loadThemes()}
++async function loadThemes() {
++  const r = await fetch('/api/studio/themes'); if (!r.ok) throw new Error('读取主题列表失败')
++  themes.value = (await r.json()).themes
++  const css = await fetch('/api/studio/themes/draft/css'); if (css.ok) themeCss.value = (await css.json()).css || ''
++}
++async function uploadTheme(event:Event) {
++  const input=event.target as HTMLInputElement,file=input.files?.[0]; if(!file)return
++  if (!/\.(zip|html|htm)$/i.test(file.name)) { message.error('请选择 CSS ZIP 或 HTML 文件'); input.value=''; return }
++  const max = /\.zip$/i.test(file.name) ? 20 : 32
++  if (file.size > max * 1024 * 1024) { message.error(`文件不能超过 ${max}MB`); input.value=''; return }
++  themeUploading.value = true
++  try {
++    const r=await fetch('/api/studio/themes/upload',{method:'POST',headers:{'X-Filename':encodeURIComponent(file.name),'Content-Type':'application/octet-stream'},body:file})
++    const data=await r.json(); if(!r.ok)throw new Error(data.error || '上传失败')
++    await loadThemes()
++    message.success(data.theme.kind === 'html' ? `已加入 HTML：识别 ${data.theme.pageCount} 个画面，请设为 Draft 预览` : 'CSS 主题已上传，请设为 Draft 预览')
++  } catch (error:any) { message.error(error.message || '上传失败') }
++  finally { themeUploading.value = false; input.value='' }
++}
++async function selectTheme(id:string) {
++  try { const r=await fetch(`/api/studio/themes/${encodeURIComponent(id)}/preview`,{method:'POST'}); const data=await r.json(); if(!r.ok)throw new Error(data.error);status.value=data.status;previewKey.value++;await loadThemes() }
++  catch(error:any){message.error(error.message || '设置 Draft 失败')}
++}
++async function deleteTheme(id:string) {
++  if(!confirm(`确认删除主题 ${id}？`))return
++  try { const r=await fetch(`/api/studio/themes/${encodeURIComponent(id)}`,{method:'DELETE'});if(!r.ok)throw new Error((await r.json()).error);await loadThemes() }
++  catch(error:any){message.error(error.message || '删除失败')}
++}
++async function saveThemeCss(){try{const r=await fetch('/api/studio/themes/draft/css',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({css:themeCss.value})});const data=await r.json();if(!r.ok)throw new Error(data.error);status.value=data.status;previewKey.value++;await loadThemes()}catch(error:any){message.error(error.message || 'CSS保存失败')}}
+ async function loadLcdThemes(){const data=await(await fetch('/api/studio/lcd/themes')).json();lcdThemes.value=data.themes;const draft=await(await fetch('/api/studio/lcd/themes/draft')).json();Object.assign(lcdConfig,draft.config||{});if(!lcdResult.value)await renderStudioLcd();await loadLcdPortraits()}
+ 
+ // ---- LCD 头像（四块 LCD 屏的人头，独立于 reveal 页头像） ----
+@@ -274,8 +330,8 @@
+ function testDisplay(){if(!lcdResult.value)return;const sent=publishLcdRenderResult(lcdResult.value,publishPresentationMqtt);lcdMessage.value=sent===4?'已通过 Controller MQTT 通道下发四块 LCD':`仅下发 ${sent}/4，请检查 MQTT 连接`}
+ function openImage(url:string){window.open(url,'_blank')}
+ async function loadVersions() { versions.value = (await (await fetch('/api/studio/versions')).json()).versions }
+-async function restore(id:string) { if (!confirm(`将版本 ${id} 复制为 Draft？正式版本不会改变。`)) return; const data = await (await fetch(`/api/studio/versions/${encodeURIComponent(id)}/restore`, {method:'POST'})).json(); status.value = data.status; const slides = await (await fetch('/api/studio/slides')).json(); markdown.value = slides.markdown; selected.value = 0; syncForm(); previewKey.value++; saveLabel.value = '历史版本已复制为草稿' }
+-onMounted(async () => { const data = await (await fetch('/api/studio/slides')).json(); markdown.value = data.markdown; status.value = data.status; syncForm(); await loadVersions(); loadPortraits(); if (module.value === 'assets') loadAssets(); if (module.value === 'theme') loadThemes(); if(module.value==='lcd')loadLcdThemes(); if (module.value === 'system') loadSystem() })
++async function restore(id:string) { if (!confirm(`将版本 ${id} 复制为 Draft？正式版本不会改变。`)) return; const data = await (await fetch(`/api/studio/versions/${encodeURIComponent(id)}/restore`, {method:'POST'})).json(); status.value = data.status; const slides = await (await fetch('/api/studio/slides')).json(); markdown.value = slides.markdown; selected.value = 0; syncForm(); previewKey.value++; saveLabel.value = '历史版本已复制为草稿'; await loadThemes() }
++onMounted(async () => { const data = await (await fetch('/api/studio/slides')).json(); markdown.value = data.markdown; status.value = data.status; syncForm(); await loadVersions(); loadPortraits(); if (module.value === 'assets') loadAssets(); if (module.value === 'theme' || module.value === 'slides') await loadThemes(); if(module.value==='lcd')loadLcdThemes(); if (module.value === 'system') loadSystem() })
+ </script>
+ 
+ <style scoped lang="scss">
+@@ -323,4 +379,6 @@
+ .page-image-info{flex:1;min-width:0}
+ .page-image-info b{font-size:12px}
+ .page-image-info small{display:block;color:#98a2b3;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.theme-hint,.html-theme-note{color:#58708b;font-size:13px;line-height:1.6;margin:12px 0}.theme-list article span{min-width:0;overflow-wrap:anywhere}.theme-list article small{display:block}.theme-preview{min-width:0}.html-theme-note{padding:12px;background:#edf5ff;border-radius:6px}
++.html-markdown-note{margin:0;padding:10px 14px;background:#edf5ff;color:#285580;font-size:13px;line-height:1.7}
+ </style>
+--- a/src/views/ShowFlow/index.vue
++++ b/src/views/ShowFlow/index.vue
+@@ -76,7 +76,7 @@
+         :value="secondarySource?.kind || 'reveal-md'"
+         :options="[
+           { label: 'PPTist 文档（服务端上传）', value: 'pptist-remote' },
+-          { label: 'Reveal / Markdown', value: 'reveal-md' },
++          { label: 'Studio 页面（CSS / HTML）', value: 'reveal-md' },
+         ]"
+         @update:value="v => switchSecondaryKind(v as 'pptist-remote' | 'reveal-md')"
+       />
+@@ -85,9 +85,9 @@
+           class="md-path"
+           :value="secondarySource?.mdPath || ''"
+           @update:value="(v: string) => showFlowStore.updateSecondarySource({ mdPath: v })"
+-          placeholder="Reveal Markdown 路径，如 /reveal/slides.md"
++          placeholder="Studio 原内容地址：/api/studio/slides/active/raw"
+         />
+-        <span class="meta">副屏页地址：/reveal/</span>
++        <span class="meta">副屏页地址：/reveal/ · HTML 在 Studio 页面主题中上传发布</span>
+       </template>
+       <template v-else>
+         <span class="meta">文档来源：服务端「副屏文稿」槽位（/upload 页选择「副屏文稿（PPTist B）」上传），与主屏完全独立；副屏页地址：/secondary</span>
+@@ -399,12 +399,12 @@
+   if (secondarySource.value?.kind === kind) return
+   showFlowStore.updateSecondarySource({
+     kind,
+-    name: kind === 'pptist-remote' ? '副屏 PPTist（服务端上传文稿）' : '副屏 Reveal / Markdown',
++    name: kind === 'pptist-remote' ? '副屏 PPTist（服务端上传文稿）' : '副屏 Studio（CSS / HTML）',
+   })
+ }
+ 
+-const refreshSecondary = () => {
+-  showFlowStore.refreshSecondaryManifest()
++const refreshSecondary = async () => {
++  await showFlowStore.refreshSecondaryManifest()
+   showFlowStore.reconcile('secondary')
+ }
+ 
+--- a/src/show-flow/adapters/reveal.ts
++++ b/src/show-flow/adapters/reveal.ts
+@@ -16,6 +16,8 @@
+ export class RevealMarkdownScreenAdapter implements ScreenAdapter {
+   private mdCache: { version: string; manifest: PageManifest[] } | null = null
+   private executing = new Set<string>()
++  /** HTML is a Studio renderer, not a new screen role or protocol. */
++  contentKind: 'markdown' | 'html' = 'markdown'
+ 
+   constructor(
+     public mdPath: string,
+@@ -29,6 +31,21 @@
+ 
+   async getManifest(): Promise<PageManifest[]> {
+     if (this.mdCache) return this.mdCache.manifest
++    // Custom Markdown sources keep their original behavior.
++    if (['/api/studio/slides/active/raw', '/reveal/slides.md'].includes(this.mdPath.split('?')[0])) {
++      const response = await fetch('/api/studio/render-config?scope=active', { cache: 'no-store' })
++      if (response.ok) {
++        const config = await response.json()
++        if (config.kind === 'html') {
++          if (!Array.isArray(config.manifest) || !config.manifest.length) throw new Error('[ShowFlow] HTML 页面清单为空')
++          this.contentKind = 'html'
++          this.mdCache = { version: config.fingerprint || config.id, manifest: config.manifest as PageManifest[] }
++          return this.mdCache.manifest
++        }
++      }
++      else if (response.status !== 404) throw new Error('[ShowFlow] 无法读取 Studio 已发布页面清单')
++    }
++    this.contentKind = 'markdown'
+     const md = await this.fetchMarkdown()
+     this.mdCache = {
+       version: markdownManifestVersion(md),
+--- a/src/show-flow/store.ts
++++ b/src/show-flow/store.ts
+@@ -82,6 +82,7 @@
+   const mainManifest = ref<PageManifest[]>([])
+   const secondaryManifest = ref<PageManifest[]>([])
+   const secondaryManifestError = ref('')
++  const secondaryIsHtml = ref(false)
+   /** 副屏为 PPTist 文稿时的原始 slides（编排页渲染缩略图用） */
+   const secondarySlides = ref<import('@/types/slides').Slide[]>([])
+ 
+@@ -188,6 +189,7 @@
+         return
+       }
+       secondaryManifest.value = await secondaryAdapter.getManifest()
++      secondaryIsHtml.value = secondaryAdapter instanceof RevealMarkdownScreenAdapter && secondaryAdapter.contentKind === 'html'
+       secondarySlides.value = secondaryAdapter instanceof PptistRemoteScreenAdapter ? secondaryAdapter.getSlides() : []
+       secondaryManifestError.value = ''
+     }
+@@ -207,6 +209,18 @@
+     const manifest = role === 'main' ? mainManifest.value : secondaryManifest.value
+     // 冷启动时内容源尚未异步加载完成；空清单不等同于“用户删除了全部页面”。
+     if (!manifest.length) return
++    if (role === 'secondary' && secondaryIsHtml.value) {
++      const valid = new Set(manifest.map(p => p.id))
++      const missing = flow.value.steps.filter(step => step.secondary?.action === 'goto' && step.secondary.pageId && !valid.has(step.secondary.pageId))
++      if (missing.length) {
++        // DO NOT silently rebind by numerical page or delete an old saved scheme.
++        secondaryManifestError.value = `HTML 已加载；${missing.length} 条旧副屏引用待重新绑定。原编排保留，请先另存方案，再从右侧页面池替换对应节点。`
++        const used = new Set(flow.value.steps.map(step => step.secondary?.pageId))
++        poolOf('secondary').splice(0, poolOf('secondary').length, ...manifest.filter(p => !used.has(p.id)).map(p => p.id))
++        return
++      }
++      secondaryManifestError.value = ''
++    }
+     const sourceLabel = role === 'main' ? '主屏' : '副屏'
+     const poolKey = role
+     const result = reconcileSteps(manifest, flow.value.steps, poolOf(poolKey as 'main' | 'secondary'), sourceLabel, role)
+@@ -366,6 +380,10 @@
+   const controllerReady = computed(() => flow.value.enabled)
+ 
+   const startShow = async () => {
++    if (secondaryIsHtml.value && flow.value.steps.some(step => step.secondary?.action === 'goto' && !secondaryManifest.value.some(p => p.id === step.secondary?.pageId))) {
++      message.error('有旧副屏页面尚未绑定到 HTML，请先在编排页核对；不会按页号自动替换。')
++      return
++    }
+     if (!controller) controller = createController()
+     if (flow.value.steps.length) await controller.start(0)
+   }
+@@ -515,8 +533,7 @@
+     sources.value[idx] = { ...sources.value[idx], ...patch }
+     secondaryManifest.value = []
+     save()
+-    refreshSecondaryManifest()
+-    reconcile('secondary')
++    void refreshSecondaryManifest().then(() => reconcile('secondary'))
+   }
+ 
+   /**
+--- a/reveal-example/reveal-markdown-evidence-screen-v4.2/showflow.js
++++ b/reveal-example/reveal-markdown-evidence-screen-v4.2/showflow.js
+@@ -4,6 +4,11 @@
+    断线重连后由 controller 的 SYNC_STATE 恢复完整状态。 */
+ (function () {
+   'use strict';
++
++  // Studio/thumbnail previews are not live secondary screens. Never take part
++  // in the active ShowFlow session or acknowledge a live NAVIGATE here.
++  var previewQuery = new URLSearchParams(location.search);
++  if (previewQuery.get('studio') === 'draft' || previewQuery.has('thumb')) return;
+ 
+   var state = {
+     ws: null,
+--- /dev/null
++++ b/tests/studio/html-theme.test.mjs
+@@ -0,0 +1,59 @@
++/** No upload code is evaluated. Run: node tests/studio/html-theme.test.mjs [final.html] */
++import assert from 'node:assert/strict'
++import fs from 'node:fs/promises'
++import path from 'node:path'
++import os from 'node:os'
++import crypto from 'node:crypto'
++import { inspectHtml, HTML_MAX_BYTES } from '../../server/studio-html.mjs'
++import { createStudioService } from '../../server/studio-service.mjs'
++let count = 0
++async function test(name, run) { await run(); count++; console.log(`✓ ${name}`) }
++const root = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-html-'))
++const revealDir = path.join(root, 'reveal'), dataDir = path.join(root, 'data/studio')
++await fs.mkdir(revealDir, { recursive: true }); await fs.writeFile(path.join(revealDir, 'slides.md'), '# Old Markdown\n'); await fs.writeFile(path.join(revealDir, 'theme.css'), 'body { color: blue }')
++const flowData = { team: [{}, {}, {}, {}], chapters: [{ title: '联调' }], pages: [{ id: 'cover', index: 0, title: '首页', kind: 'cover' }, { id: 'joint', index: 1, title: '联合工作', kind: 'detail', chapter: 0, lead: 3, coLeads: [1, 3], team: ['统筹', '平台接收', '准备仿真', '设备联调'] }] }
++const sample = Buffer.from(`<!doctype html><html><head><title>主题</title></head><body><script id="flow-data" type="application/json">${JSON.stringify(flowData)}</script><script>globalThis.UPLOAD_WAS_EXECUTED=true;window.ZhizhengFlow={};</script></body></html>`)
++let service = createStudioService({ rootDir: root, revealDir, dataDir }); await service.init()
++try {
++  await test('auto-detect stable multi-page JSON without executing JS', () => { const m = inspectHtml(sample); assert.equal(m.pageCount, 2); assert.equal(m.adapter, 'zhizheng'); assert.equal(globalThis.UPLOAD_WAS_EXECUTED, undefined); assert.deepEqual(m.manifest.map(p => p.id), ['cover', 'joint']) })
++  await test('LCD snapshot uses the original schema', () => { const m = inspectHtml(sample); assert.equal(m.manifest[1].lcd.source.type, 'reveal-md'); assert.equal(m.manifest[1].lcd.lead, 'hardware'); assert.equal(m.manifest[1].lcd.roles.platform.task, '平台接收') })
++  await test('generic HTML is explicitly one page', () => { const m = inspectHtml(Buffer.from('<html><body>Hello</body></html>')); assert.equal(m.pageCount, 1); assert.match(m.warning, /单页/) })
++  await test('reject fragment', () => assert.throws(() => inspectHtml(Buffer.from('<div>Hello</div>')), /完整/))
++  await test('reject non-UTF8', () => assert.throws(() => inspectHtml(Buffer.from([0xff, 0xfe])), /UTF-8/))
++  await test('reject oversize', () => assert.throws(() => inspectHtml(Buffer.alloc(HTML_MAX_BYTES + 1)), /32MB/))
++  await test('reject bad JSON', () => assert.throws(() => inspectHtml(Buffer.from('<html><body><script id="flow-data" type="application/json">{bad}</script></body></html>')), /JSON/))
++  await test('reject duplicate stable IDs', () => assert.throws(() => inspectHtml(Buffer.from(sample.toString().replace('"id":"joint"', '"id":"cover"'))), /重复/))
++  await test('reject invalid stable IDs', () => assert.throws(() => inspectHtml(Buffer.from(sample.toString().replace('"id":"joint"', '"id":"../server"'))), /非法/))
++  await test('reject position mismatch', () => assert.throws(() => inspectHtml(Buffer.from(sample.toString().replace('"index":1', '"index":99'))), /index/))
++  await test('explicit manifest contract', () => { const m = inspectHtml(Buffer.from('<html><body><script id="showflow-manifest" type="application/json">{"format":"showflow-html/1.0","adapter":"showflow","pages":[{"id":"a","title":"A"}]}</script></body></html>')); assert.equal(m.adapter, 'showflow') })
++  let first
++  await test('upload in original theme library does not publish', async () => { first = await service.uploadTheme('测试主题.html', sample); assert.equal(first.kind, 'html'); assert.equal((await service.renderConfig()).kind, 'css'); assert.equal((await service.status()).dirty, false) })
++  await test('same filename creates a distinct immutable version', async () => { const second = await service.uploadTheme('测试主题.html', sample); assert.notEqual(first.id, second.id) })
++  await test('list distinguishes HTML and CSS', async () => { const entries = await service.listThemes(); assert.equal(entries[0].kind, 'css'); assert.equal(entries.find(t => t.id === first.id).pageCount, 2) })
++  await test('Draft selection only affects Draft', async () => { await service.selectDraftTheme(first.id); assert.equal((await service.renderConfig('draft')).kind, 'html'); assert.equal((await service.renderConfig('active')).kind, 'css'); assert.equal((await service.status()).dirty, true) })
++  await test('download preserves exact original bytes', async () => { const e = await service.exportTheme('draft'); assert.deepEqual(e.data, sample); assert.equal(e.filename, '测试主题.html') })
++  await test('CSS editor refuses HTML without changing it', async () => { await assert.rejects(() => service.saveDraftThemeCss('body{}'), /HTML/); assert.deepEqual((await service.getHtml(first.id)).data, sample) })
++  await test('publish promotes HTML but does not overwrite Markdown', async () => { await service.publish('HTML'); assert.equal((await service.renderConfig()).id, first.id); assert.equal((await service.getSlides('active')).markdown, '# Old Markdown\n') })
++  await test('published/draft themes cannot be deleted', async () => assert.rejects(() => service.deleteTheme(first.id), /引用|不能/))
++  await test('quick consecutive publications have distinct history IDs', async () => { await service.publish('again'); assert.equal((await service.versions()).length, 2) })
++  await test('restarting service restores HTML active state', async () => { service = createStudioService({ rootDir: root, revealDir, dataDir }); await service.init(); assert.equal((await service.renderConfig()).id, first.id) })
++  await test('switch to CSS retains HTML in library', async () => { await service.selectDraftTheme('default'); await service.publish('CSS'); assert.equal((await service.renderConfig()).kind, 'css'); assert.equal((await service.themeInfo(first.id)).kind, 'html') })
++  await test('restore HTML history is Draft only until publish', async () => { const version = (await service.versions()).find(v => v.revealTheme === first.id); await service.restore(version.id); assert.equal((await service.renderConfig('draft')).id, first.id); assert.equal((await service.renderConfig()).kind, 'css'); await service.publish('restored'); assert.equal((await service.renderConfig()).id, first.id) })
++  await test('history-referenced themes cannot be removed after switching', async () => { await service.selectDraftTheme('default'); await service.publish(); await assert.rejects(() => service.deleteTheme(first.id), /引用/) })
++  await test('HTML byte fingerprints are stable', async () => assert.equal((await service.themeInfo(first.id)).fingerprint, crypto.createHash('sha256').update(sample).digest('hex')))
++  await test('path traversal is rejected', async () => { await assert.rejects(() => service.themeInfo('../x'), /无效/); await assert.rejects(() => service.getHtml('..'), /无效/); await assert.rejects(() => service.selectDraftTheme('../'), /无效/) })
++  await test('invalid upload never changes active content', async () => { await assert.rejects(() => service.uploadTheme('bad.html', Buffer.from('bad')), /完整/); assert.equal((await service.renderConfig()).kind, 'css') })
++  await test('CSS edit clones active CSS, preserving published copy', async () => { await service.saveDraftThemeCss('body{color:red}'); assert.equal((await service.renderConfig()).id, 'default'); assert.equal(await fs.readFile(path.join(revealDir, 'theme.css'), 'utf8'), 'body { color: blue }'); assert.equal((await service.status()).dirty, true) })
++  await test('queued theme selection and publish cannot lose the selected Draft', async () => {
++    await Promise.all([service.selectDraftTheme(first.id), service.publish('queued')])
++    assert.equal((await service.renderConfig()).id, first.id)
++  })
++  await test('Active ignores a Draft-only theme override', async () => {
++    assert.equal((await service.renderConfig('active', 'default')).id, first.id)
++    assert.equal((await service.renderConfig('draft', 'default')).id, 'default')
++  })
++  if (process.argv[2]) {
++    await test('approved final HTML: all 16 IDs, no lost double-lead metadata', async () => { const actual = inspectHtml(await fs.readFile(process.argv[2])); assert.equal(actual.pageCount, 16); assert.equal(actual.manifest[3].id, 'stage-1-detail-1'); assert.equal(actual.manifest[15].id, 'closing'); assert.equal(actual.adapter, 'zhizheng') })
++  }
++  console.log(`\n${count} HTML/theme assertions groups passed`)
++} finally { await fs.rm(root, { recursive: true, force: true }) }

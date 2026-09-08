@@ -244,6 +244,19 @@ export class MqttLink {
     }
   }
 
+  publish(topic: string, text: string, options: { qos?: 0 | 1 | 2; retain?: boolean } = {}): boolean {
+    const client = this.client
+    if (!client || !client.connected) return false
+    try {
+      client.publish(topic, text, { qos: options.qos ?? 1, retain: options.retain ?? true })
+      return true
+    }
+    catch (error) {
+      this.hooks.onLog('mqtt', 'error', `发布失败：${(error as Error)?.message || error}`)
+      return false
+    }
+  }
+
   private connect() {
     if (this.destroyed || !this.config) return
     let url: string
@@ -256,7 +269,10 @@ export class MqttLink {
       return
     }
 
-    const clientId = (this.config.clientId || '').trim() || `pptist-${Math.random().toString(36).slice(2, 10)}`
+    // Client ID 必须每个连接实例唯一：编辑器/Studio/编排页等多个窗口都会启动联动桥，
+    // 固定 ID 会互踢（Broker 报 Client ID collision 并反复掉线重连）
+    const clientIdBase = (this.config.clientId || '').trim() || 'pptist-mqtt'
+    const clientId = `${clientIdBase}-${Math.random().toString(36).slice(2, 8)}`
     this.setStatus('connecting')
     this.hooks.onLog('mqtt', 'info', `正在连接 Broker（Client ID：${clientId}）`)
 

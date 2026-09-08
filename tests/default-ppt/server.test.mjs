@@ -51,6 +51,7 @@ function startServer() {
       ...process.env,
       PPTIST_PORT: String(PORT),
       PPTIST_DATA_DIR: dataDir,
+      PPTIST_SHOWFLOW_STATE_FILE: path.join(dataDir, 'showflow-state.json'),
       PPTIST_DIST_DIR: path.join(ROOT, 'dist'),
       PPTIST_MAX_UPLOAD_MB: '5',
       PPTIST_KEEP_VERSIONS: '3',
@@ -288,6 +289,20 @@ try {
     const missing = await fetch(`${BASE}/assets/nope.js`)
     assert.equal(missing.status, 404)
     ok('SPA 回退：/ /play /upload /editor 刷新均返回页面，真实缺失资源仍 404')
+  }
+
+  // 8.5 ShowFlow 乐观锁：旧电脑不能静默覆盖新电脑保存的方案
+  {
+    const makeState = name => ({ version: 3, sources: [{ id: 'main-pptist', kind: 'pptist', name: 'main', role: 'main' }], flow: { id: 'f1', name, enabled: false, confirmationEnabled: true, confirmationMode: 'strict', mainSourceId: 'main-pptist', steps: [] }, flows: [{ id: 'f1', name, enabled: false, confirmationEnabled: true, confirmationMode: 'strict', mainSourceId: 'main-pptist', steps: [] }], activeFlowId: 'f1' })
+    const saveFlow = (name, baseRevision) => fetch(`${BASE}/showflow-api/state`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: makeState(name), baseRevision }) })
+    const first = await saveFlow('电脑 A', 0)
+    assert.equal(first.status, 200)
+    assert.equal((await first.json()).revision, 1)
+    const stale = await saveFlow('电脑 B 的旧副本', 0)
+    assert.equal(stale.status, 409)
+    const currentFlow = await (await fetch(`${BASE}/showflow-api/state`)).json()
+    assert.equal(currentFlow.state.flow.name, '电脑 A')
+    ok('ShowFlow 并发保存：旧 revision 返回 409，服务端数据不被覆盖')
   }
 
   // 9. 服务重启后持久化恢复

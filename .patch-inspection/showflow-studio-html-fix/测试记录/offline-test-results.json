@@ -1,0 +1,6 @@
+{
+  "errors": [],
+  "pages": 16,
+  "monitorCaptures": 2,
+  "testingMode": "about:blank offline component fixture; fetch and WebSocket test doubles. Real local HTTP browser access blocked by administrator."
+}

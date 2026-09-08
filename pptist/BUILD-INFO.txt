@@ -1,0 +1,3 @@
+﻿PPTist RK3588 LCD deployment
+Build: 20260905-201523
+Node: node-v20.18.1-linux-arm64.tar.xz
