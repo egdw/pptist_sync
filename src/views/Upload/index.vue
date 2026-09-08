@@ -126,8 +126,7 @@ import {
   type DefaultPptConfig,
   type DefaultPptMeta,
 } from '@/services/defaultPpt'
-import { uploadMainDeckV3 } from '@/services/mainDeckUpload'
-import { renderSlideToPngDataUrl } from '@/services/pageImageExport'
+import { renderSlideToPngDataUrl, dataUrlToBlob } from '@/services/pageImageExport'
 import type { PPTImageElement } from '@/types/slides'
 import { copyText } from '@/utils/clipboard'
 import message from '@/utils/message'
@@ -403,50 +402,8 @@ watch(exporting, value => {
   statusText.value = `解析成功：共 ${resultSlides.length} 页，可以上传`
 })
 
-// PPTX 现有导入流程无完成回调，通过 exporting 状态判断解析结束
-watch(exporting, value => {
-  if (value || !selectedFile.value || !parsing.value) return
-  parsing.value = false
-
-  const resultSlides = slides.value
-  const isSeedUntouched = resultSlides.length === 1 && resultSlides[0].id === seedSlideId
-  if (isSeedUntouched || !resultSlides.length) {
-    // 解析失败（useImport 内部已提示原因），旧默认 PPT 不受影响
-    errorText.value = errorText.value || '解析失败：无法正确读取该文件，请确认文件未损坏后重试'
-    statusText.value = ''
-    parsed.value = false
-    return
-  }
-  if (uploadTarget.value === 'main') {
-    // v3：轻结构快照（图片 src 为 blob: objectURL，字节在浏览器内存中未展开）
-    parsedV3.value = {
-      slides: JSON.parse(JSON.stringify(resultSlides)),
-      theme: slidesStore.theme,
-      viewportSize: slidesStore.viewportSize,
-      viewportRatio: slidesStore.viewportRatio,
-      title: slidesStore.title,
-    }
-  }
-  else {
-    parsedBundleParts.value = buildBundleParts({
-      title: slidesStore.title,
-      slides: resultSlides,
-      theme: slidesStore.theme,
-      viewportSize: slidesStore.viewportSize,
-      viewportRatio: slidesStore.viewportRatio,
-    })
-  }
-  parsedPageCount.value = resultSlides.length
-  parsed.value = true
-  statusText.value = `解析成功：共 ${resultSlides.length} 页，可以上传`
-})
-
 /** 主屏 v3 上传：逐页渲染为整页图片资产，GIF 图片保留为动图覆盖层 */
 const API = '/default-ppt-api'
-const EXT_BY_MIME: Record<string, string> = {
-  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
-  'image/svg+xml': 'svg', 'image/bmp': 'bmp',
-}
 const pagesCount = computed(() => parsedV3.value?.slides.length || parsedPageCount.value)
 
 const prepareMainDeckV3 = async (sessionId: string) => {
@@ -455,11 +412,6 @@ const prepareMainDeckV3 = async (sessionId: string) => {
   const viewportSize = v3.viewportSize || slidesStore.viewportSize
   const viewportRatio = v3.viewportRatio || slidesStore.viewportRatio
   const sessionUrl = `${API}/upload-sessions/${sessionId}`
-  const pages: {
-    id: string
-    pageAsset: string
-    gifs: { url: string; x: number; y: number; w: number; h: number }[]
-  }[] = []
   const total = v3.slides.length
 
   for (let i = 0; i < total; i++) {
@@ -467,46 +419,39 @@ const prepareMainDeckV3 = async (sessionId: string) => {
     statusText.value = `生成页面图片（${i + 1}/${total}）...`
     progressPercent.value = Math.round((i / total) * 70)
 
-    // 1. 整页渲染为 PNG（GIF 以首帧烘焙进底图，播放时被真实 GIF 覆盖）
+    // 1. 整页离屏渲染为 PNG（全部静态内容含 GIF 首帧烘焙进底图）
     const pngDataUrl = await renderSlideToPngDataUrl(slide, viewportSize, viewportRatio)
     const pagePut = await fetch(`${sessionUrl}/assets`, {
       method: 'PUT',
       headers: { 'Content-Type': 'image/png', 'X-Asset-Ext': 'png' },
-      body: pngDataUrl,
+      body: dataUrlToBlob(pngDataUrl),
     })
     if (!pagePut.ok) throw new Error(`页面图片上传失败（${pagePut.status}）`)
     const pageAsset = (await pagePut.json()).name
 
-    // 2. GIF 元素：字节上传为动图资产（内容原样），引用替换为资产 URL
-    const gifs: { url: string; x: number; y: number; w: number; h: number }[] = []
-    const elements: PPTImageElement[] = []
-    for (const el of slide.elements as PPTImageElement[]) {
-      if (el.type !== 'image' || !el.src?.startsWith('blob:')) {
-        elements.push(el)
-        continue
-      }
+    // 2. GIF 元素：字节原样上传为动图资产，作为唯一保留的「活」元素（覆盖在底图对应位置上播放）；
+    //    其余元素（文本/形状/静态图）已烘焙进底图，从活元素中移除避免双重渲染
+    const overlays: PPTImageElement[] = []
+    for (const el of slide.elements) {
+      if (el.type !== 'image' || !el.src?.startsWith('blob:')) continue
       const blob = await (await fetch(el.src)).blob()
-      const ext = EXT_BY_MIME[blob.type] || 'png'
+      if (blob.type !== 'image/gif') continue // 静态图：已烘焙
       const gifPut = await fetch(`${sessionUrl}/assets`, {
         method: 'PUT',
-        headers: { 'Content-Type': blob.type || 'application/octet-stream', 'X-Asset-Ext': ext },
+        headers: { 'Content-Type': 'image/gif', 'X-Asset-Ext': 'gif' },
         body: blob,
       })
       if (!gifPut.ok) throw new Error(`GIF 上传失败（${gifPut.status}）`)
       const asset = (await gifPut.json()).name
-      const assetUrl = `${API}/assets/${asset}`
       URL.revokeObjectURL(el.src)
-      gifs.push({ url: assetUrl, x: el.left, y: el.top, w: el.width, h: el.height })
-      elements.push({ ...el, src: assetUrl })
+      overlays.push({ ...el, src: `${API}/assets/${asset}` })
     }
 
-    pages.push({ id: slide.id, pageAsset, gifs })
-    // 页面重写为「整页底图 + GIF 覆盖层」结构
-    slide.elements = elements as unknown as typeof slide.elements
+    // 页面重写为「整页底图 + GIF 覆盖层」——标准 Slide 结构，播放端零改动
+    slide.elements = overlays
     slide.background = { type: 'image', image: { src: `${API}/assets/${pageAsset}`, size: 'cover' } }
     progressPercent.value = Math.round(((i + 1) / total) * 70)
   }
-  return pages
 }
 
 const upload = async () => {
@@ -524,8 +469,8 @@ const upload = async () => {
       // 1. 会话
       const session = await (await fetch(`${API}/upload-sessions`, { method: 'POST' })).json()
       const sessionUrl = `${API}/upload-sessions/${session.sessionId}`
-      // 2. 逐页渲染整页图片 + 剥离 GIF 覆盖层，页面图/资产逐个直传
-      const pages = await prepareMainDeckV3(session.sessionId)
+      // 2. 逐页渲染整页图片 + 剥离 GIF 覆盖层，页面图/资产逐个直传（slides 原地重写）
+      await prepareMainDeckV3(session.sessionId)
       // 3. 原始文件流式上传
       statusText.value = `上传原始文件 ...`
       progressPercent.value = 72
@@ -535,15 +480,15 @@ const upload = async () => {
         body: selectedFile.value,
       })
       if (!rawPut.ok) throw new Error(`原始文件上传失败（${rawPut.status}）`)
-      // 4. 轻结构 bundle（整页底图 + GIF 覆盖层）
+      // 4. 轻结构 bundle：与播放端协议一致（slides 数组），每页=整页底图+GIF覆盖层
       statusText.value = '上传文稿结构 ...'
       progressPercent.value = 94
       const bundle = {
-        title: slidesStore.title,
-        schema: 'image-pages',
-        pages: pages.map(p => ({ id: p.id, pageAsset: p.pageAsset, gifs: p.gifs })),
-        viewportSize: slidesStore.viewportSize,
-        viewportRatio: slidesStore.viewportRatio,
+        title: v3.title || slidesStore.title,
+        slides: v3.slides,
+        theme: v3.theme,
+        viewportSize: v3.viewportSize,
+        viewportRatio: v3.viewportRatio,
       }
       const bundlePut = await fetch(`${sessionUrl}/bundle`, {
         method: 'PUT',
