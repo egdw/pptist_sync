@@ -85,6 +85,13 @@ const main = async () => {
   ok((await p3) === true, 'Step3: ACK 后完成')
   ok(h.controller.snapshot?.mainPageId === 'a2' && h.controller.snapshot?.secondaryPageId === 'f2' && h.controller.snapshot?.tabletScene === 'scene06', 'Step3: 主副同步切换 + tablet scene 快照')
 
+  // 重连恢复只下发完整快照，避免 SYNC_STATE + NAVIGATE 造成副屏重复渲染/截图
+  const beforeResync = h.sentMessages.length
+  h.controller.resyncAll()
+  const resyncMessages = h.sentMessages.slice(beforeResync)
+  ok(resyncMessages.filter(m => m.type === 'SYNC_STATE').length === 1, '重连恢复: 下发一次完整 SYNC_STATE')
+  ok(resyncMessages.filter(m => m.type === 'NAVIGATE').length === 0, '重连恢复: 不再重复下发 NAVIGATE')
+
   // —— 事件型 Step ——
   h.resetNotices()
   await wait(220) // 越过防连击 debounce

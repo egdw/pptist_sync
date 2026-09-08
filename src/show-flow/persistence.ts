@@ -65,6 +65,7 @@ export function migrateShowFlowState(parsed: ShowFlowPersistence): ShowFlowPersi
   }
   return {
     version: 3,
+    serverRevision: parsed.serverRevision,
     sources,
     flow: { ...createDefaultFlow(), ...parsed.flow },
     flows: flows.map(f => ({ ...createDefaultFlow(), ...f })),
@@ -97,6 +98,16 @@ export function saveShowFlowState(state: ShowFlowPersistence): void {
   localStorage.setItem(SHOW_FLOW_STORAGE_KEY, JSON.stringify(state))
 }
 
+/**
+ * 放映进度属于单个控制台的运行态，不能写入共享方案。
+ * 否则每次空格翻页都会递增服务端 revision，并让其他已打开窗口立即变成旧版本。
+ */
+export function stripShowFlowRuntimeState(flow: ShowFlow): ShowFlow {
+  const persistable = { ...flow }
+  delete persistable.currentStepId
+  return persistable
+}
+
 export async function loadShowFlowStateFromServer(): Promise<ShowFlowPersistence | null> {
   const response = await fetch('/showflow-api/state', { cache: 'no-store' })
   if (!response.ok) throw new Error(`读取服务端方案失败（${response.status}）`)
@@ -104,11 +115,15 @@ export async function loadShowFlowStateFromServer(): Promise<ShowFlowPersistence
   return data?.exists && data?.state ? data.state as ShowFlowPersistence : null
 }
 
-export async function saveShowFlowStateToServer(state: ShowFlowPersistence): Promise<void> {
+export async function saveShowFlowStateToServer(state: ShowFlowPersistence): Promise<number> {
   const response = await fetch('/showflow-api/state', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ state }),
+    body: JSON.stringify({ state, baseRevision: state.serverRevision || 0 }),
+    keepalive: true,
   })
+  if (response.status === 409) throw new Error('方案已在其他窗口或电脑更新，请刷新页面后再编辑')
   if (!response.ok) throw new Error(`保存服务端方案失败（${response.status}）`)
+  const data = await response.json()
+  return Number(data.revision || 0)
 }

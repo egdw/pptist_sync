@@ -9,7 +9,8 @@
  */
 import assert from 'node:assert'
 import { parseMarkdownManifest, markdownManifestVersion, stablePageHash } from '../../src/show-flow/manifest.ts'
-import { reconcileSteps } from '../../src/show-flow/reconciliation.ts'
+import { reconcileSteps, reconcileStepsPreservingMissing } from '../../src/show-flow/reconciliation.ts'
+import { stripShowFlowRuntimeState } from '../../src/show-flow/persistence.ts'
 
 let pass = 0
 const ok = (cond, name) => { if (cond) { pass++; console.log('✓', name) } else { console.log('✗ FAIL:', name) } }
@@ -91,6 +92,10 @@ ok(r6.steps.length === 0 && r6.report.removedSteps.includes('s9'), '双屏引用
 const r7 = reconcileSteps(pages(['a']), [step('s10', 'x', 'y', { tablet: { scene: 's1' } })], [], '主屏')
 ok(r7.steps.length === 1 && r7.steps[0].main?.action !== 'goto' && r7.steps[0].tablet?.scene === 's1', '事件步骤仅清除页面引用、保留步骤')
 
+// 自动刷新期间的临时/占位清单不得删除已保存方案。
+const protectedRefresh = reconcileStepsPreservingMissing(pages(['temporary-placeholder']), [step('saved-1', 'main-real', 'secondary-real')], [], '主屏', 'main')
+ok(protectedRefresh.preservedMissing === 1 && protectedRefresh.steps.length === 1 && protectedRefresh.steps[0].main?.pageId === 'main-real', '临时主屏清单保留原步骤与页面引用')
+
 // 冷启动/双内容源：主屏清单只能对账主屏引用，绝不能误删副屏引用（反之亦然）
 const crossRole = [step('cross', 'main-a', 'secondary-b')]
 const mainOnly = reconcileSteps(pages(['main-a']), crossRole, [], '主屏', 'main')
@@ -98,5 +103,12 @@ ok(mainOnly.steps[0].secondary.pageId === 'secondary-b', '主屏对账不删除�
 const secondaryOnly = reconcileSteps(pages(['secondary-b']), crossRole, [], '副屏', 'secondary')
 ok(secondaryOnly.steps[0].main.pageId === 'main-a', '副屏对账不删除主屏引用')
 
+// 放映时按空格只改变控制台运行态；共享方案中不得保存当前 Step。
+const persistedFlow = stripShowFlowRuntimeState({
+  id: 'flow-1', name: '方案', enabled: true, confirmationEnabled: true, confirmationMode: 'strict',
+  mainSourceId: 'main-pptist', currentStepId: 'step-2', steps: [step('step-2', 'a')],
+})
+ok(!('currentStepId' in persistedFlow) && persistedFlow.steps[0].id === 'step-2', '放映进度不进入共享方案持久化数据')
+
 console.log(`\n结果: ${pass} 通过`)
-process.exit(pass === 20 ? 0 : 1)
+process.exit(pass === 22 ? 0 : 1)

@@ -1,0 +1,67 @@
+{
+  "format": "showflow-studio-html-source-patch/1.0",
+  "baseArchive": "pptist_sync-feature-virtual-show-flow.zip",
+  "baseArchiveSha256": "a682d0e7d03ea0d34906e6209977b392b273602163c66d049f89db4f0b03891b",
+  "files": [
+    {
+      "path": "server/studio-service.mjs",
+      "beforeSha256": "da57e93d8ac23dd1483869deb4d8f13edd5b38ebb7e9eb0d4fb2511953c0b6a0",
+      "afterSha256": "473fd16a4e59a184c5488072040445d18a8a3f59f76043660e9acbed0f8574ea"
+    },
+    {
+      "path": "server/pptist-server.mjs",
+      "beforeSha256": "4e93f38432b1dd75fa116518c23296dc51b0ec29cc7839c04024307bbb24d42c",
+      "afterSha256": "fbf3ea55dcf45dcbc8923be0027bbd4e9c57c5b1f8ea94de41f98d200c2ee32a"
+    },
+    {
+      "path": "server/studio-html.mjs",
+      "beforeSha256": null,
+      "afterSha256": "9694c808951156d957626694ab4bbb456b1edd413d321868ef714eecc72c2c85"
+    },
+    {
+      "path": "server/studio-html-runtime.html",
+      "beforeSha256": null,
+      "afterSha256": "5d616d35ff7dd1d868d7bc76b2c6f71049e200177cb7a648ed122c62a2898841"
+    },
+    {
+      "path": "server/studio-html-runtime.js",
+      "beforeSha256": null,
+      "afterSha256": "9efd97176d67ff57f716bcbe130f117389544cbc7a4edd4b156dd7813135502d"
+    },
+    {
+      "path": "server/studio-html-bridge.js",
+      "beforeSha256": null,
+      "afterSha256": "624d7cc9427034e860ec42871c01dfd8c03c26fb225945e5a834efb4b9bd127a"
+    },
+    {
+      "path": "src/views/Studio/index.vue",
+      "beforeSha256": "1276b17b63a3909fc27fd7ae62e718b0e50bb484862c4d32dba45037bbcc4a20",
+      "afterSha256": "2bf15b66653bbc0d83c0e655bd33664923ead2731e92c4ff6cceddca862d29a2"
+    },
+    {
+      "path": "src/views/ShowFlow/index.vue",
+      "beforeSha256": "dd730cd5059772f2556fd4f6bc22c5a370d59f9973084d00b07c6cd818cc6b2c",
+      "afterSha256": "3e47cede6469d09d4f1324c743d330fe2ed31f347efd8c47bb7f0f038d8e766a"
+    },
+    {
+      "path": "src/show-flow/adapters/reveal.ts",
+      "beforeSha256": "0fca07a5d77ef6af2ddea7adc9187c42ecd6dc3c9e4185fa3e77fd316e12a631",
+      "afterSha256": "360d8e218ffbb42cf3293df4c798c194beff7355f3ea9de87a809e65ea975f2b"
+    },
+    {
+      "path": "src/show-flow/store.ts",
+      "beforeSha256": "934239753d0fbafc519d83a9f0e66503b56d16e332fedf14ea285adf71923150",
+      "afterSha256": "7b15dcd4708b0bcf9633972244bc842cd0ed49ec4a2c33bdb1c64ee5fecb251e"
+    },
+    {
+      "path": "reveal-example/reveal-markdown-evidence-screen-v4.2/showflow.js",
+      "beforeSha256": "045cc29231b5788060beb6c51184e407563a4f1f042087edf82fb96463a9c771",
+      "afterSha256": "643cf590974907fa0e186002fda96b0ac06864ab8abe40373974b878c3454bb2"
+    },
+    {
+      "path": "tests/studio/html-theme.test.mjs",
+      "beforeSha256": null,
+      "afterSha256": "b70e4a5b05ed54274f2d880f6f93dd83413ca8261e2757841c48ee3cc19193db"
+    }
+  ]
+}

@@ -90,3 +90,48 @@ export function reconcileSteps(
   }
   return { steps: keptSteps, unmapped: unmappedKept, report }
 }
+
+/**
+ * 编辑器自动刷新使用的安全对账：只要发现已保存的页面引用暂时不在清单中，
+ * 就保留全部 Step。页面加载中的占位清单、网络抖动或内容源切换不能被当成
+ * “用户删除了页面”，否则会把持久化方案不可逆地清空。
+ */
+export function reconcileStepsPreservingMissing(
+  newManifest: PageManifest[],
+  steps: ShowStep[],
+  unmapped: string[],
+  sourceLabel: string,
+  role: 'main' | 'secondary',
+): { steps: ShowStep[]; unmapped: string[]; report: ReconciliationReport; preservedMissing: number } {
+  const aliveIds = new Set(newManifest.map(page => page.id))
+  const referenced = new Set<string>()
+  let preservedMissing = 0
+
+  for (const step of steps) {
+    const target = role === 'main' ? step.main : step.secondary
+    if (target?.action !== 'goto' || !target.pageId) continue
+    if (aliveIds.has(target.pageId)) referenced.add(target.pageId)
+    else preservedMissing++
+  }
+
+  if (!preservedMissing) {
+    return { ...reconcileSteps(newManifest, steps, unmapped, sourceLabel, role), preservedMissing: 0 }
+  }
+
+  const report = emptyReport()
+  report.kept = steps.length
+  const nextUnmapped = unmapped.filter(id => aliveIds.has(id) && !referenced.has(id))
+  for (const page of newManifest) {
+    if (referenced.has(page.id) || nextUnmapped.includes(page.id)) continue
+    nextUnmapped.push(page.id)
+    report.added++
+  }
+  report.removed = Math.max(0, unmapped.length - nextUnmapped.length)
+  report.messages.push(`${sourceLabel}清单中暂时缺少 ${preservedMissing} 个已编排页面引用；为保护方案，未删除任何步骤`)
+  return {
+    steps: JSON.parse(JSON.stringify(steps)),
+    unmapped: nextUnmapped,
+    report,
+    preservedMissing,
+  }
+}

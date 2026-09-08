@@ -37,10 +37,13 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { attachShowFlowWs } from './showflow-ws.mjs'
 import { createLedRenderService } from './led/render-service.mjs'
 import { createStudioService } from './studio-service.mjs'
+import { parseMarkdownManifest } from './studio-html-md-manifest.mjs'
 import { createMonitorService } from './monitor-service.mjs'
 import { createMonitorMqttPublisher } from './monitor-mqtt-publisher.mjs'
 
@@ -58,6 +61,7 @@ const REMOTE_API = process.env.PPTIST_REMOTE_API !== undefined ? process.env.PPT
 const LED_CACHE_DIR = path.resolve(process.env.PPTIST_LED_CACHE_DIR || path.join(ROOT, 'data/led-cache'))
 const LED_PORTRAIT_DIR = path.resolve(process.env.PPTIST_LED_PORTRAIT_DIR || path.join(ROOT, 'data/led-assets/portraits'))
 const SHOWFLOW_STATE_FILE = path.resolve(process.env.PPTIST_SHOWFLOW_STATE_FILE || path.join(ROOT, 'data/showflow/state.json'))
+const SHOWFLOW_LAST_NONEMPTY_FILE = path.join(path.dirname(SHOWFLOW_STATE_FILE), 'state.last-nonempty.json')
 const PRESENTATION_LINK_CONFIG_FILE = path.resolve(process.env.PPTIST_PRESENTATION_LINK_CONFIG_FILE || path.join(ROOT, 'data/config/presentation-link.json'))
 const STUDIO_DATA_DIR = path.resolve(process.env.PPTIST_STUDIO_DATA_DIR || path.join(ROOT, 'data/studio'))
 const ledRenderService = createLedRenderService({ cacheDir: LED_CACHE_DIR, portraitDir: LED_PORTRAIT_DIR, publicUrl: PUBLIC_URL })
@@ -66,6 +70,7 @@ const studioService = createStudioService({ rootDir: ROOT, revealDir: REVEAL_DIR
 const MONITOR_MQTT_TOPIC = process.env.PPTIST_MONITOR_MQTT_TOPIC || 'presentation/led/display'
 const monitorService = createMonitorService({ cacheDir: path.join(ROOT, 'data', 'monitor') })
 const monitorPublisher = createMonitorMqttPublisher({ topic: MONITOR_MQTT_TOPIC, log })
+let showFlowStateWriteChain = Promise.resolve()
 let getShowFlowWsStatus = () => ({ totalConnections: 0, checkedAt: Date.now(), roles: {} })
 
 const MIME = {
@@ -100,48 +105,66 @@ async function atomicWrite(file, data) {
   await fsp.rename(tmp, file)
 }
 
-/**
- * 校验上传内容（二进制信封 v2：[4 字节头长度][4 字节 bundle 长度][头部 JSON{filename,pageCount}][bundle 字节][原始文件字节]）。
- * bundle（解析后的文稿 JSON）不再整体 JSON.parse——按字节范围原样落盘，
- * 服务端只做轻量结构检查，内存占用与校验开销不随文稿大小膨胀。
- */
-function validateUpload({ filename, file, bundleBuf, pageCount }) {
-  filename = String(filename || '')
-  if (!/\.(pptx|pdf)$/i.test(filename)) throw new Error('仅支持 .pptx / .pdf 文件')
-  if (!Buffer.isBuffer(file) || file.length === 0) throw new Error('缺少文件内容')
-  if (file.length > MAX_UPLOAD_MB * 1024 * 1024) {
-    throw new Error(`文件超过大小上限（${MAX_UPLOAD_MB}MB）`)
+/** 将大上传直接落盘并解析信封边界，避免把 bundle 与原文件整体驻留内存。 */
+async function receiveEnvelopeFile(req, directory, maxBytes) {
+  await fsp.mkdir(directory, { recursive: true })
+  const envelopeFile = path.join(directory, `incoming-${crypto.randomUUID()}.bin`)
+  const declared = Number(req.headers['content-length'] || 0)
+  if (declared > maxBytes) throw new Error(`请求体过大（上限约 ${Math.round(maxBytes / 1024 / 1024)}MB）`)
+  let received = 0
+  const limiter = new Transform({
+    transform(chunk, _encoding, callback) {
+      received += chunk.length
+      if (received > maxBytes) callback(new Error(`请求体过大（上限约 ${Math.round(maxBytes / 1024 / 1024)}MB）`))
+      else callback(null, chunk)
+    },
+  })
+  try {
+    await pipeline(req, limiter, fs.createWriteStream(envelopeFile, { flags: 'wx' }))
+    if (received < 8) throw new Error('请求体为空')
+    const handle = await fsp.open(envelopeFile, 'r')
+    try {
+      const lengths = Buffer.alloc(8)
+      await handle.read(lengths, 0, 8, 0)
+      const headerLen = lengths.readUInt32BE(0)
+      const bundleLen = lengths.readUInt32BE(4)
+      if (headerLen > 1024 * 1024 || bundleLen > 3 * 1024 * 1024 * 1024) throw new Error('请求头/解析数据超出限制')
+      const fileOffset = 8 + headerLen + bundleLen
+      if (fileOffset >= received) throw new Error('上传信封不完整')
+      const headerBuf = Buffer.alloc(headerLen)
+      await handle.read(headerBuf, 0, headerLen, 8)
+      let header
+      try {
+        header = JSON.parse(headerBuf.toString('utf8'))
+      }
+      catch {
+        throw new Error('请求头不是有效的 JSON')
+      }
+      return { envelopeFile, received, header, bundleOffset: 8 + headerLen, bundleLen, fileOffset, fileLen: received - fileOffset }
+    }
+    finally {
+      await handle.close()
+    }
   }
-  const magic4 = file.subarray(0, 4).toString('latin1')
-  if (/\.pptx$/i.test(filename)) {
-    if (magic4 !== 'PK\x03\x04') throw new Error('文件不是有效的 PPTX（ZIP）格式，可能已损坏')
+  catch (error) {
+    await fsp.rm(envelopeFile, { force: true }).catch(() => {})
+    throw error
   }
-  else if (!file.subarray(0, 5).toString('latin1').startsWith('%PDF')) {
-    throw new Error('文件不是有效的 PDF 格式，可能已损坏')
-  }
-  if (!Buffer.isBuffer(bundleBuf) || bundleBuf.length < 10) throw new Error('解析结果为空，无法设为默认 PPT')
-  if (bundleBuf.indexOf('"slides":[') === -1) throw new Error('解析结果格式不正确')
-  const pages = Number(pageCount)
-  if (!Number.isInteger(pages) || pages < 1) throw new Error('解析结果为空，无法设为默认 PPT')
-  return { filename, file, bundleBuf, pageCount: pages }
 }
 
-/** 拆解二进制信封 v2 请求体为 { filename, pageCount, bundleBuf, file } */
-function parseEnvelope(body) {
-  if (body.length < 8) throw new Error('请求体为空')
-  const headerLen = body.readUInt32BE(0)
-  const bundleLen = body.readUInt32BE(4)
-  if (headerLen > 1024 * 1024 || bundleLen > 3 * 1024 * 1024 * 1024) throw new Error('请求头/解析数据超出限制')
-  let header
-  try {
-    header = JSON.parse(body.subarray(8, 8 + headerLen).toString('utf8'))
+async function streamRange(source, target, start, length) {
+  if (length <= 0) throw new Error('上传数据区段为空')
+  await pipeline(fs.createReadStream(source, { start, end: start + length - 1 }), fs.createWriteStream(target, { flags: 'wx' }))
+}
+
+async function rangeContains(source, start, length, marker) {
+  let tail = ''
+  for await (const chunk of fs.createReadStream(source, { start, end: start + length - 1 })) {
+    const text = tail + chunk.toString('utf8')
+    if (text.includes(marker)) return true
+    tail = text.slice(-(marker.length - 1))
   }
-  catch {
-    throw new Error('请求头不是有效的 JSON')
-  }
-  header.bundleBuf = body.subarray(8 + headerLen, 8 + headerLen + bundleLen)
-  header.file = body.subarray(8 + headerLen + bundleLen)
-  return header
+  return false
 }
 
 /**
@@ -237,8 +260,23 @@ function createDocStore({ dataDir, label }) {
     })
   }
 
-  async function processUpload(body) {
-    const { filename, file, bundleBuf, pageCount } = validateUpload(body)
+  async function processUploadEnvelope(upload) {
+    const filename = String(upload.header.filename || '')
+    const pageCount = Number(upload.header.pageCount)
+    if (!/\.(pptx|pdf)$/i.test(filename)) throw new Error('仅支持 .pptx / .pdf 文件')
+    if (upload.fileLen > MAX_UPLOAD_MB * 1024 * 1024) throw new Error(`文件超过大小上限（${MAX_UPLOAD_MB}MB）`)
+    if (!Number.isInteger(pageCount) || pageCount < 1) throw new Error('解析结果为空，无法设为默认 PPT')
+    const handle = await fsp.open(upload.envelopeFile, 'r')
+    try {
+      const magic = Buffer.alloc(5)
+      await handle.read(magic, 0, 5, upload.fileOffset)
+      if (/\.pptx$/i.test(filename) && magic.subarray(0, 4).toString('latin1') !== 'PK\x03\x04') throw new Error('文件不是有效的 PPTX（ZIP）格式，可能已损坏')
+      if (/\.pdf$/i.test(filename) && !magic.toString('latin1').startsWith('%PDF')) throw new Error('文件不是有效的 PDF 格式，可能已损坏')
+    }
+    finally {
+      await handle.close()
+    }
+    if (!await rangeContains(upload.envelopeFile, upload.bundleOffset, upload.bundleLen, '"slides":[')) throw new Error('解析结果格式不正确')
 
     const seq = (current?.seq || 0) + 1
     const version = `v${seq}`
@@ -255,8 +293,8 @@ function createDocStore({ dataDir, label }) {
     const uploadTmpDir = path.join(tmpDir, `${version}-${crypto.randomUUID()}`)
     await fsp.mkdir(uploadTmpDir, { recursive: true })
     try {
-      await fsp.writeFile(path.join(uploadTmpDir, 'raw.file'), file)
-      await fsp.writeFile(path.join(uploadTmpDir, 'slides.json'), bundleBuf)
+      await streamRange(upload.envelopeFile, path.join(uploadTmpDir, 'raw.file'), upload.fileOffset, upload.fileLen)
+      await streamRange(upload.envelopeFile, path.join(uploadTmpDir, 'slides.json'), upload.bundleOffset, upload.bundleLen)
       await fsp.writeFile(path.join(uploadTmpDir, 'meta.json'), JSON.stringify(meta, null, 2))
       await fsp.rm(versionDir, { recursive: true, force: true })
       await fsp.rename(uploadTmpDir, versionDir)
@@ -275,14 +313,14 @@ function createDocStore({ dataDir, label }) {
   }
 
   async function handleUpload(req, res) {
+    let upload = null
     try {
-      // 请求体上限 = 文件上限 + 3GB（bundle 余量）
-      const body = await readRawBody(req, MAX_UPLOAD_MB * 1024 * 1024 + 3 * 1024 * 1024 * 1024)
-      const header = parseEnvelope(body)
+      // 请求流先落临时文件，内存占用不随 PPT/bundle 大小增长。
+      upload = await receiveEnvelopeFile(req, tmpDir, MAX_UPLOAD_MB * 1024 * 1024 + 3 * 1024 * 1024 * 1024)
       // 串行处理：按提交顺序完成“校验→保存→原子切换→通知”
       const result = await (uploadChain = uploadChain.then(
-        () => processUpload(header),
-        () => processUpload(header),
+        () => processUploadEnvelope(upload),
+        () => processUploadEnvelope(upload),
       ))
       slog(`上传成功：v${result.seq} ${result.filename}（${result.pageCount} 页）`)
       sendJson(res, 200, { ok: true, ...publicMeta() })
@@ -290,6 +328,9 @@ function createDocStore({ dataDir, label }) {
     catch (error) {
       slog('上传失败：', error.message)
       sendJson(res, 400, { ok: false, error: error.message })
+    }
+    finally {
+      if (upload?.envelopeFile) await fsp.rm(upload.envelopeFile, { force: true }).catch(() => {})
     }
   }
 
@@ -462,6 +503,18 @@ const server = http.createServer(async (req, res) => {
         const raw = await readRawBody(req, 6 * 1024 * 1024)
         return JSON.parse(raw.toString('utf8') || '{}')
       }
+      if (req.method === 'GET' && pathname === '/api/studio/render-config') {
+        sendJson(res, 200, await studioService.renderConfig(url.searchParams.get('scope') === 'draft' ? 'draft' : 'active', url.searchParams.get('theme') || '')); return
+      }
+      if (req.method === 'GET' && ['/api/studio/html-runtime.js', '/api/studio/html-bridge.js'].includes(pathname)) {
+        const script = pathname.endsWith('html-bridge.js') ? 'studio-html-bridge.js' : 'studio-html-runtime.js'
+        res.setHeader('Cache-Control', 'no-store'); await serveStatic(req, res, '/' + script, __dirname); return
+      }
+      const htmlContentMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)\/html$/)
+      if (req.method === 'GET' && htmlContentMatch) {
+        const { data } = await studioService.getHtml(decodeURIComponent(htmlContentMatch[1]))
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'no-store' }); res.end(data); return
+      }
       if (req.method === 'GET' && pathname === '/api/studio/slides') { sendJson(res, 200, await studioService.getSlides('draft')); return }
       if (req.method === 'GET' && pathname === '/api/studio/slides/active') { sendJson(res, 200, await studioService.getSlides('active')); return }
       if (req.method === 'GET' && pathname === '/api/studio/slides/draft/raw') {
@@ -469,7 +522,10 @@ const server = http.createServer(async (req, res) => {
       }
       // ShowFlow 副屏清单数据源：Studio「发布」后的正式内容（从未编辑时自动播种原始样例）
       if (req.method === 'GET' && pathname === '/api/studio/slides/active/raw') {
-        const { markdown } = await studioService.getSlides('active'); res.writeHead(200, { 'Content-Type': MIME['.md'], 'Cache-Control': 'no-store' }); res.end(markdown); return
+        // ShowFlow editor compatibility: when an HTML theme is active, expose a
+        // projected Markdown manifest using the teacher's original flow-* IDs
+        // but the HTML's real page titles. Protocol/LCD semantics are unchanged.
+        const markdown = await studioService.getShowFlowSlidesRaw('active'); res.writeHead(200, { 'Content-Type': MIME['.md'], 'Cache-Control': 'no-store' }); res.end(markdown); return
       }
       if (req.method === 'PUT' && pathname === '/api/studio/slides') { const body = await readJson(); sendJson(res, 200, { ok: true, status: await studioService.saveDraft(body.markdown) }); return }
       if (req.method === 'POST' && pathname === '/api/studio/publish') { const body = await readJson(); sendJson(res, 200, { ok: true, status: await studioService.publish(body.message) }); return }
@@ -497,14 +553,24 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && pathname === '/api/studio/system/status') { const render=ledRenderService.getStatus(); sendJson(res, 200, { studio: await studioService.status(), services: { server: 'running', webSocket: 'running', reveal: 'running', lcdRenderService: 'running' }, websocket: getShowFlowWsStatus(), lcd: { protocol: 'led-display/1.0', acknowledgement: '板端 ACK/心跳尚未配置回传 Topic', roles: ['manager','platform','twin','hardware'].map(role=>({role,online:null,currentRevision:render?.revision||null,imageUrl:render?.screens.find(item=>item.role===role)?.url||null,lastRender:render?.renderedAt||null,lastAck:null,lastHeartbeat:null,rssi:null})) } }); return }
       if (req.method === 'GET' && pathname === '/api/studio/themes') { sendJson(res, 200, { themes: await studioService.listThemes() }); return }
-      if (req.method === 'GET' && pathname === '/api/studio/themes/current/download') { const exported=await studioService.exportTheme(url.searchParams.get('scope')||'active'); res.writeHead(200,{'Content-Type':'application/zip','Content-Disposition':`attachment; filename="${exported.filename}"`,'Content-Length':exported.data.length,'Cache-Control':'no-store'});res.end(exported.data);return }
+      if (req.method === 'GET' && pathname === '/api/studio/themes/current/download') {
+        const exported = await studioService.exportTheme(url.searchParams.get('scope') || 'active')
+        res.writeHead(200, { 'Content-Type': exported.contentType || 'application/zip', 'Content-Disposition': `attachment; filename="theme.${exported.contentType ? 'html' : 'zip'}"; filename*=UTF-8''${encodeURIComponent(exported.filename)}`, 'Content-Length': exported.data.length, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' }); res.end(exported.data); return
+      }
       if (req.method === 'GET' && pathname === '/api/studio/themes/draft/css') { sendJson(res, 200, await studioService.getDraftThemeCss()); return }
       if (req.method === 'PUT' && pathname === '/api/studio/themes/draft/css') { const body=await readJson(); sendJson(res, 200, {ok:true,...await studioService.saveDraftThemeCss(body.css)}); return }
-      if (req.method === 'POST' && pathname === '/api/studio/themes/upload') { const data = await readRawBody(req, 20 * 1024 * 1024); sendJson(res, 200, { ok: true, theme: await studioService.uploadTheme(decodeURIComponent(req.headers['x-filename'] || ''), data) }); return }
+      if (req.method === 'POST' && pathname === '/api/studio/themes/upload') { const data = await readRawBody(req, 32 * 1024 * 1024); sendJson(res, 200, { ok: true, theme: await studioService.uploadTheme(decodeURIComponent(req.headers['x-filename'] || ''), data) }); return }
       const themeSelectMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)\/preview$/)
       if (req.method === 'POST' && themeSelectMatch) { sendJson(res, 200, { ok: true, status: await studioService.selectDraftTheme(decodeURIComponent(themeSelectMatch[1])) }); return }
       const themeFileMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)\/files\/(.+)$/)
-      if (req.method === 'GET' && themeFileMatch) { const id = decodeURIComponent(themeFileMatch[1]); if (!/^[a-z0-9._-]+$/i.test(id)) { sendJson(res, 400, { error: '无效主题 ID' }); return } if (id === 'default') { await serveStatic(req, res, '/theme.css', REVEAL_DIR); return } await serveStatic(req, res, `/${themeFileMatch[2]}`, path.join(studioService.themesDir, id)); return }
+      if (req.method === 'GET' && themeFileMatch) {
+        const id = decodeURIComponent(themeFileMatch[1]); const info = await studioService.themeInfo(id)
+        if (info.kind === 'html') { sendJson(res, 404, { error: 'HTML 仅在隔离副屏容器内运行；请通过下载接口获取原文件' }); return }
+        const relative = decodeURIComponent(themeFileMatch[2])
+        if (relative.split('/').some(part => part.startsWith('.'))) { sendJson(res, 400, { error: '非法主题资源' }); return }
+        if (id === 'default') { await serveStatic(req, res, '/theme.css', REVEAL_DIR); return }
+        await serveStatic(req, res, `/${themeFileMatch[2]}`, path.join(studioService.themesDir, id)); return
+      }
       const themeDeleteMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)$/)
       if (req.method === 'DELETE' && themeDeleteMatch) { await studioService.deleteTheme(decodeURIComponent(themeDeleteMatch[1])); sendJson(res, 200, { ok: true }); return }
       if (req.method === 'GET' && pathname === '/api/studio/lcd/themes') { sendJson(res,200,{themes:await studioService.listLcdThemes()}); return }
@@ -560,7 +626,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET') {
         try {
           const state = sanitizeState(JSON.parse(await fsp.readFile(SHOWFLOW_STATE_FILE, 'utf8')))
-          sendJson(res, 200, { exists: true, state })
+          sendJson(res, 200, { exists: true, state: { ...state, serverRevision: Number(state.serverRevision || 0) } })
         }
         catch (error) {
           if (error.code === 'ENOENT') sendJson(res, 200, { exists: false, state: null })
@@ -572,11 +638,38 @@ const server = http.createServer(async (req, res) => {
         const chunks = []; let size = 0
         for await (const chunk of req) { size += chunk.length; if (size > 5 * 1024 * 1024) throw new Error('ShowFlow 方案数据不能超过 5MB'); chunks.push(chunk) }
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
-        if (!body.state || !Array.isArray(body.state.sources) || !Array.isArray(body.state.flows)) { sendJson(res, 400, { error: '无效的 ShowFlow 方案数据' }); return }
+        if (!body.state || !Array.isArray(body.state.sources) || !Array.isArray(body.state.flows) || !body.state.flows.length ||
+            body.state.flows.some(flow => !flow || typeof flow.id !== 'string' || !Array.isArray(flow.steps)) ||
+            !body.state.flows.some(flow => flow.id === body.state.activeFlowId)) {
+          sendJson(res, 400, { error: '无效的 ShowFlow 方案数据' }); return
+        }
         const state = sanitizeState(body.state)
-        await fsp.mkdir(path.dirname(SHOWFLOW_STATE_FILE), { recursive: true })
-        await atomicWrite(SHOWFLOW_STATE_FILE, JSON.stringify(state, null, 2))
-        sendJson(res, 200, { ok: true }); return
+        const totalSteps = value => Array.isArray(value?.flows)
+          ? value.flows.reduce((sum, flow) => sum + (Array.isArray(flow?.steps) ? flow.steps.length : 0), 0)
+          : 0
+        // 即使多个页面同时保存，也按服务端接收顺序逐个落盘；非空版本另存恢复副本。
+        showFlowStateWriteChain = showFlowStateWriteChain.catch(() => {}).then(async () => {
+          await fsp.mkdir(path.dirname(SHOWFLOW_STATE_FILE), { recursive: true })
+          const previous = await fsp.readFile(SHOWFLOW_STATE_FILE, 'utf8').then(JSON.parse).catch(() => null)
+          const currentRevision = Number(previous?.serverRevision || 0)
+          if (Number(body.baseRevision || 0) !== currentRevision) {
+            const conflict = new Error('方案已被其他电脑更新')
+            conflict.code = 'SHOWFLOW_CONFLICT'
+            throw conflict
+          }
+          state.serverRevision = currentRevision + 1
+          if (totalSteps(previous) > 0) await atomicWrite(SHOWFLOW_LAST_NONEMPTY_FILE, JSON.stringify(previous, null, 2))
+          await atomicWrite(SHOWFLOW_STATE_FILE, JSON.stringify(state, null, 2))
+          if (totalSteps(state) > 0) await atomicWrite(SHOWFLOW_LAST_NONEMPTY_FILE, JSON.stringify(state, null, 2))
+        })
+        try {
+          await showFlowStateWriteChain
+        }
+        catch (error) {
+          if (error.code === 'SHOWFLOW_CONFLICT') { sendJson(res, 409, { ok: false, error: error.message }); return }
+          throw error
+        }
+        sendJson(res, 200, { ok: true, revision: state.serverRevision }); return
       }
       sendJson(res, 405, { error: 'Method Not Allowed' }); return
     }
@@ -757,6 +850,31 @@ const server = http.createServer(async (req, res) => {
       return
     }
     if (pathname.startsWith('/reveal/')) {
+      if (req.method === 'GET' && (pathname === '/reveal/' || pathname === '/reveal/index.html') && !url.searchParams.has('md') && url.searchParams.get('content') !== 'markdown') {
+        const config = await studioService.renderConfig(url.searchParams.get('studio') === 'draft' ? 'draft' : 'active', url.searchParams.get('studioTheme') || '')
+        if (config.kind === 'html') {
+          const shell = await fsp.readFile(path.join(__dirname, 'studio-html-runtime.html'))
+          res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(shell); return
+        }
+      }
+
+      // Display-only/native fallback and Studio previews must NOT register another
+      // secondary role. Keep the teacher's original showflow.js byte-for-byte;
+      // omit its script tag only for these non-participating view containers.
+      if (req.method === 'GET' && (pathname === '/reveal/' || pathname === '/reveal/index.html') &&
+          (url.searchParams.has('displayOnly') || url.searchParams.get('studio') === 'draft' || url.searchParams.has('thumb'))) {
+        let html = await fsp.readFile(path.join(REVEAL_DIR, 'index.html'), 'utf8')
+        html = html.replace(/<script\b[^>]*src=["'](?:\.\/)?showflow\.js[^"']*["'][^>]*>[\s\S]*?<\/script\s*>/gi, '')
+        if (url.searchParams.has('displayOnly')) {
+          const token = url.searchParams.get('sfToken') || ''
+          if (!/^[0-9a-f]{32}$/.test(token)) { sendJson(res, 400, { error: '显示帧 token 无效' }); return }
+          const { markdown } = await studioService.getSlides(url.searchParams.get('studio') === 'draft' ? 'draft' : 'active')
+          const config = JSON.stringify({ token, adapter: 'native', parentOrigin: 'self', manifest: parseMarkdownManifest(markdown) }).replace(/</g, '\\u003c')
+          html = html.replace(/<\/body>/i, `<script id="showflow-bridge-config" type="application/json">${config}</script><script src="/api/studio/html-bridge.js"></script></body>`)
+        }
+        res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); res.end(html); return
+      }
+
       if (pathname === '/reveal/slides.md') {
         const { markdown } = await studioService.getSlides('active')
         res.writeHead(200, { 'Content-Type': MIME['.md'], 'Cache-Control': 'no-store' }); res.end(markdown); return
@@ -774,7 +892,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (pathname === '/reveal/theme.css') {
         const meta = await studioService.status()
-        if (meta.activeRevealTheme && meta.activeRevealTheme !== 'default') { await serveStatic(req, res, '/theme.css', path.join(studioService.themesDir, meta.activeRevealTheme)); return }
+        if (meta.activeRevealTheme && meta.activeRevealTheme !== 'default' && (await studioService.themeInfo(meta.activeRevealTheme)).kind === 'css') { await serveStatic(req, res, '/theme.css', path.join(studioService.themesDir, meta.activeRevealTheme)); return }
       }
       const themeAssetExt = path.extname(pathname).toLowerCase()
       if (['.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.woff', '.woff2'].includes(themeAssetExt)) {
@@ -787,6 +905,16 @@ const server = http.createServer(async (req, res) => {
         }
       }
       await serveStatic(req, res, pathname.replace(/^\/reveal/, '') || '/', REVEAL_DIR)
+      return
+    }
+
+    // Studio 页面主题兼容入口：不依赖重新构建 dist。
+    // 仅替换 /studio/theme 的管理 UI；其他 Studio 页面仍由原 SPA 提供。
+    if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/studio/theme') {
+      const file = path.join(__dirname, 'studio-theme-admin.html')
+      const data = await fsp.readFile(file)
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': data.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
+      if (req.method === 'GET') res.end(data); else res.end()
       return
     }
 

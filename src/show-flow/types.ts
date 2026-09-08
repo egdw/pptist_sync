@@ -90,7 +90,7 @@ export interface ShowFlow {
   confirmationMode: 'strict' | 'loose'
   mainSourceId: string
   secondarySourceId?: string
-  /** 当前编辑光标（最近一次执行到的 Step），仅编辑/控制台状态，非持久强制项 */
+  /** @deprecated 旧版持久化字段；当前放映步骤已改由控制台运行态维护，不再保存 */
   currentStepId?: string
   steps: ShowStep[]
   /** 未编排页面池（按角色分组），跟随方案保存 */
@@ -100,6 +100,8 @@ export interface ShowFlow {
 /** 持久化整体结构（v3 起支持多方案 + 副屏源指向 Studio 发布内容；flow 字段保留为当前方案镜像，便于回滚兼容） */
 export interface ShowFlowPersistence {
   version: 1 | 2 | 3
+  /** 服务端并发控制版本；由服务端递增，防止多电脑静默互相覆盖 */
+  serverRevision?: number
   sources: ContentSource[]
   flow: ShowFlow
   /** v2：全部已保存方案 */

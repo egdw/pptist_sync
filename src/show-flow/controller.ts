@@ -357,13 +357,6 @@ export class ShowFlowController {
       sessionId: this.sessionId,
       state: snap,
     })
-    this.transport.sendToRole('secondary', {
-      type: 'NAVIGATE',
-      commandId: `resync-${nanoid(6)}`,
-      stepId: snap.stepId,
-      pageId: snap.secondaryPageId ?? '',
-      role: 'secondary',
-    })
     this.callbacks.onNotice('已向全部屏幕发送状态同步', 'info')
     void this.callbacks.onLcdPage?.(snap.secondaryPageId, true)
   }

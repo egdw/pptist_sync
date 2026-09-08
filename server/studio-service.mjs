@@ -1,7 +1,9 @@
 import crypto from 'node:crypto'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
-import AdmZip from 'adm-zip'
+async function openZip(data) { const { default: AdmZip } = await import('adm-zip'); return new AdmZip(data) }
+import { inspectHtml, HTML_META_FILE } from './studio-html.mjs'
+import { buildCompatibleConfig, buildShowFlowProjectionMarkdown } from './studio-html-compat.mjs'
 
 const MAX_MARKDOWN = 5 * 1024 * 1024
 const ASSET_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'])
@@ -18,7 +20,7 @@ function safeName(value) {
 }
 
 function versionId(date = new Date()) {
-  return date.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '')
+  return date.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/Z$/, '').replace('.', '-') + '-' + crypto.randomInt(100000, 999999)
 }
 
 const PORTRAIT_ROLES = ['manager', 'platform', 'twin', 'hardware']
@@ -35,6 +37,10 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
   const lcdThemesDir = path.join(studioDir, 'lcd-themes')
   const defaultLcdTheme = { background: '#101b31', taskFontSize: 46, roleFontSize: 60, stageFontSize: 56, maxTaskLines: 3 }
   let writeChain = Promise.resolve()
+  function serialize(task) {
+    writeChain = writeChain.catch(() => {}).then(task)
+    return writeChain
+  }
 
   async function exists(file) { return !!(await fsp.stat(file).catch(() => null)) }
   async function readMeta() {
@@ -67,10 +73,22 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
     return { markdown, status: await status() }
   }
 
+  async function getShowFlowSlidesRaw(which = 'active') {
+    const file = which === 'draft' ? draftFile : activeFile
+    const markdown = await fsp.readFile(file, 'utf8')
+    const meta = await readMeta()
+    const id = which === 'draft'
+      ? (meta.draftRevealTheme || meta.activeRevealTheme || 'default')
+      : (meta.activeRevealTheme || 'default')
+    const theme = await themeInfo(id)
+    if (theme.kind !== 'html') return markdown
+    return buildShowFlowProjectionMarkdown(theme, markdown)
+  }
+
   function saveDraft(markdown) {
     if (typeof markdown !== 'string' || !markdown.trim()) throw new Error('Markdown 不能为空')
     if (Buffer.byteLength(markdown) > MAX_MARKDOWN) throw new Error('Markdown 不能超过 5MB')
-    writeChain = writeChain.then(async () => {
+    writeChain = writeChain.catch(() => {}).then(async () => {
       await atomicWrite(draftFile, markdown.replace(/\r\n/g, '\n'))
       const meta = await readMeta()
       meta.draftRevision = Number(meta.draftRevision || 0) + 1
@@ -82,7 +100,7 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
   }
 
   function publish(message = '') {
-    writeChain = writeChain.then(async () => {
+    writeChain = writeChain.catch(() => {}).then(async () => {
       const markdown = await fsp.readFile(draftFile, 'utf8')
       const id = versionId()
       const target = path.join(versionsDir, id)
@@ -111,16 +129,21 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
     return items
   }
 
-  async function restore(id) {
-    if (!/^[0-9T_\-]+$/.test(id)) throw new Error('无效版本 ID')
-    const markdown = await fsp.readFile(path.join(versionsDir, id, 'slides.md'), 'utf8')
-    await saveDraft(markdown)
-    const version = JSON.parse(await fsp.readFile(path.join(versionsDir, id, 'version.json'), 'utf8'))
-    const meta = await readMeta()
-    if (version.revealTheme) meta.draftRevealTheme = version.revealTheme
-    if (version.lcdTheme) meta.draftLcdTheme = version.lcdTheme
-    await writeMeta(meta)
-    return status()
+  function restore(id) {
+    return serialize(async () => {
+      if (!/^[0-9T_\-]+$/.test(id)) throw new Error('无效版本 ID')
+      const markdown = await fsp.readFile(path.join(versionsDir, id, 'slides.md'), 'utf8')
+      const version = JSON.parse(await fsp.readFile(path.join(versionsDir, id, 'version.json'), 'utf8'))
+      if (version.revealTheme) await themeInfo(version.revealTheme)
+      await atomicWrite(draftFile, markdown)
+      const meta = await readMeta()
+      meta.draftRevision = Number(meta.draftRevision || 0) + 1
+      meta.draftUpdatedAt = new Date().toISOString()
+      if (version.revealTheme) meta.draftRevealTheme = version.revealTheme
+      if (version.lcdTheme) meta.draftLcdTheme = version.lcdTheme
+      await writeMeta(meta)
+      return status()
+    })
   }
 
   async function listAssets() {
@@ -182,16 +205,61 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
     return { role, url: `/reveal/portraits/${role}.png` }
   }
 
-  async function listThemes() {
-    const names = await fsp.readdir(themesDir).catch(() => [])
+  function checkThemeId(id) {
+    if (typeof id !== 'string' || !/^[a-zA-Z0-9\u4e00-\u9fff][a-zA-Z0-9._\-\u4e00-\u9fff]{0,180}$/.test(id)) throw new Error('无效主题 ID')
+    return id
+  }
+  async function themeInfo(id) {
+    checkThemeId(id)
+    if (id === 'default') return { id, name: '内置主题', kind: 'css' }
+    const dir = path.join(themesDir, id)
+    if (await exists(path.join(dir, HTML_META_FILE))) {
+      const old = JSON.parse(await fsp.readFile(path.join(dir, HTML_META_FILE), 'utf8'))
+      // Reinspect raw HTML without rewriting it: repairs v1's inferred LCD metadata,
+      // so an already uploaded/active file does NOT have to be re-uploaded.
+      return { ...inspectHtml(await fsp.readFile(path.join(dir,'index.html')), old.filename || id + '.html'), id }
+    }
+    if (await exists(path.join(dir, 'theme.css'))) return { id, name: id, kind: 'css' }
+    throw new Error('主题不存在')
+  }
+  async function renderConfig(scope = 'active', selectedId = '') {
     const meta = await readMeta()
-    return [{ id: 'default', name: '内置主题' }, ...names.map(id => ({ id, name: id }))].map(item => ({ ...item, active: (meta.activeRevealTheme || 'default') === item.id, draft: (meta.draftRevealTheme || meta.activeRevealTheme || 'default') === item.id }))
+    const id = scope === 'draft' ? (selectedId || meta.draftRevealTheme || meta.activeRevealTheme || 'default') : (meta.activeRevealTheme || 'default')
+    let theme = await themeInfo(id)
+    if (theme.kind === 'html') {
+      const markdown = await fsp.readFile(scope === 'draft' ? draftFile : activeFile, 'utf8')
+      theme = buildCompatibleConfig(theme, markdown)
+    }
+    return { ...theme, scope, revision: scope === 'draft' ? meta.draftRevision : meta.activeRevision, contentUrl: theme.kind === 'html' ? `/api/studio/themes/${encodeURIComponent(id)}/html` : null }
+  }
+  async function getHtml(id) {
+    const theme = await themeInfo(id)
+    if (theme.kind !== 'html') throw new Error('该主题不是 HTML')
+    return { theme, data: await fsp.readFile(path.join(themesDir, id, 'index.html')) }
+  }
+  async function listThemes() {
+    const names = (await fsp.readdir(themesDir, { withFileTypes: true }).catch(() => [])).filter(x => x.isDirectory()).map(x => x.name)
+    const meta = await readMeta()
+    const items = await Promise.all(['default', ...names].map(id => themeInfo(id).catch(() => null)))
+    return items.filter(Boolean).map(({ manifest, ...item }) => ({ ...item, active: (meta.activeRevealTheme || 'default') === item.id, draft: (meta.draftRevealTheme || meta.activeRevealTheme || 'default') === item.id }))
   }
 
   async function uploadTheme(filename, data) {
-    if (!/\.zip$/i.test(filename || '')) throw new Error('主题必须为 ZIP')
+    if (/\.html?$/i.test(filename || '')) {
+      const info = inspectHtml(data, safeName(filename))
+      const id = `html-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`
+      const temp = path.join(studioDir, 'tmp', id)
+      await fsp.mkdir(temp, { recursive: true })
+      try {
+        await fsp.writeFile(path.join(temp, 'index.html'), data)
+        await fsp.writeFile(path.join(temp, HTML_META_FILE), JSON.stringify(info, null, 2))
+        await fsp.rename(temp, path.join(themesDir, id))
+      } catch (error) { await fsp.rm(temp, { recursive: true, force: true }); throw error }
+      return { ...info, id }
+    }
+    if (!/\.zip$/i.test(filename || '')) throw new Error('请选择 CSS 主题 ZIP，或完整 .html / .htm 文件')
     if (!data.length || data.length > 20 * 1024 * 1024) throw new Error('主题 ZIP 必须小于 20MB')
-    const zip = new AdmZip(data)
+    const zip = await openZip(data)
     const entries = zip.getEntries()
     if (!entries.length || entries.length > 200) throw new Error('主题 ZIP 文件数量无效')
     let total = 0
@@ -228,41 +296,56 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
     return { id, name: id }
   }
 
-  async function selectDraftTheme(id) {
-    if (id !== 'default' && !(await exists(path.join(themesDir, safeName(id), 'theme.css')))) throw new Error('主题不存在')
-    const meta = await readMeta(); meta.draftRevealTheme = id; await writeMeta(meta); return status()
+  function selectDraftTheme(id) {
+    return serialize(async () => {
+      await themeInfo(id)
+      const meta = await readMeta(); meta.draftRevealTheme = id; await writeMeta(meta); return status()
+    })
   }
 
-  async function deleteTheme(id) {
+  function deleteTheme(id) {
+    return serialize(async () => {
+    checkThemeId(id)
+    const history = await versions()
+    if (history.some(item => item.revealTheme === id)) throw new Error('该主题被发布历史引用；保留以便回滚')
     const meta = await readMeta()
     if (id === 'default' || id === meta.activeRevealTheme || id === meta.draftRevealTheme) throw new Error('不能删除内置、正式或 Draft 正在使用的主题')
     await fsp.rm(path.join(themesDir, safeName(id)), { recursive: true, force: true })
+    })
   }
 
   async function getDraftThemeCss() {
     const meta = await readMeta(); const id = meta.draftRevealTheme || meta.activeRevealTheme || 'default'
+    if ((await themeInfo(id)).kind === 'html') return { id, kind: 'html', css: '' }
     const file = id === 'default' ? path.join(revealDir, 'theme.css') : path.join(themesDir, id, 'theme.css')
     return { id, css: await fsp.readFile(file, 'utf8') }
   }
 
-  async function saveDraftThemeCss(css) {
+  function saveDraftThemeCss(css) {
+    return serialize(async () => {
     if (typeof css !== 'string' || !css.trim() || Buffer.byteLength(css) > 1024 * 1024) throw new Error('CSS 为空或超过 1MB')
     const meta = await readMeta(); let id = meta.draftRevealTheme || meta.activeRevealTheme || 'default'
-    if (id === 'default') {
-      id = `custom-${Date.now().toString(36)}`
+    if ((await themeInfo(id)).kind === 'html') throw new Error('HTML 自带样式；请修改 HTML 后重新上传，不使用 CSS 编辑器')
+    if (id === 'default' || id === (meta.activeRevealTheme || 'default') || (await versions()).some(v => v.revealTheme === id)) {
+      const sourceId = id
+      id = `custom-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`
+      if (sourceId !== 'default') await fsp.cp(path.join(themesDir, sourceId), path.join(themesDir, id), { recursive: true })
       await fsp.mkdir(path.join(themesDir, id), { recursive: true })
       meta.draftRevealTheme = id
     }
     await atomicWrite(path.join(themesDir, id, 'theme.css'), css)
     meta.draftRevealTheme = id; await writeMeta(meta)
     return { id, status: await status() }
+    })
   }
 
   async function exportTheme(scope = 'active') {
     const meta = await readMeta()
     const id = scope === 'draft' ? (meta.draftRevealTheme || meta.activeRevealTheme || 'default') : (meta.activeRevealTheme || 'default')
+    const info = await themeInfo(id)
+    if (info.kind === 'html') return { id, filename: info.filename || `${id}.html`, contentType: 'text/html; charset=utf-8', data: await fsp.readFile(path.join(themesDir, id, 'index.html')) }
     const sourceDir = id === 'default' ? revealDir : path.join(themesDir, id)
-    const zip = new AdmZip()
+    const zip = await openZip()
     async function addDirectory(dir, prefix = '') {
       const entries = await fsp.readdir(dir, { withFileTypes: true })
       for (const entry of entries) {
@@ -302,7 +385,7 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
   }
   async function uploadLcdTheme(filename, data) {
     if (!/\.zip$/i.test(filename || '') || !data.length || data.length > 20*1024*1024) throw new Error('LCD Theme 必须为小于 20MB 的 ZIP')
-    const zip = new AdmZip(data); const entries = zip.getEntries(); let total=0
+    const zip = await openZip(data); const entries = zip.getEntries(); let total=0
     for (const entry of entries) { const name=entry.entryName.replace(/\\/g,'/'); const mode=(entry.attr>>>16)&0o170000; if(name.startsWith('/')||/^[A-Za-z]:/.test(name)||name.split('/').includes('..'))throw new Error('LCD Theme ZIP 包含路径穿越或绝对路径'); if(mode===0o120000)throw new Error('LCD Theme ZIP 不允许符号链接'); total+=entry.header.size; if(total>10*1024*1024)throw new Error('LCD Theme 解压内容过大'); if(!entry.isDirectory&&!/\.json$/i.test(name))throw new Error('LCD Theme ZIP 仅允许 JSON') }
     const configEntry=entries.find(entry=>/(^|\/)lcd-theme\.json$/i.test(entry.entryName)); if(!configEntry)throw new Error('缺少 lcd-theme.json')
     let parsed; try{parsed=JSON.parse(configEntry.getData().toString('utf8'))}catch{throw new Error('lcd-theme.json 不是有效 JSON')}
@@ -314,5 +397,5 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
   async function activeLcdConfig() { const meta=await readMeta(); return lcdConfig(meta.activeLcdTheme||'default') }
   async function draftLcdConfig() { const meta=await readMeta(); return {id:meta.draftLcdTheme||meta.activeLcdTheme||'default',config:await lcdConfig(meta.draftLcdTheme||meta.activeLcdTheme||'default')} }
 
-  return { studioDir, assetsDir, themesDir, lcdThemesDir, activeFile, draftFile, init, status, getSlides, saveDraft, publish, versions, restore, listAssets, saveAsset, deleteAsset, listPortraits, savePortrait, listThemes, uploadTheme, selectDraftTheme, deleteTheme, getDraftThemeCss, saveDraftThemeCss, exportTheme, lcdConfig, listLcdThemes, saveLcdTheme, uploadLcdTheme, selectDraftLcdTheme, deleteLcdTheme, activeLcdConfig, draftLcdConfig }
+  return { themeInfo, renderConfig, getHtml, studioDir, assetsDir, themesDir, lcdThemesDir, activeFile, draftFile, init, status, getSlides, getShowFlowSlidesRaw, saveDraft, publish, versions, restore, listAssets, saveAsset, deleteAsset, listPortraits, savePortrait, listThemes, uploadTheme, selectDraftTheme, deleteTheme, getDraftThemeCss, saveDraftThemeCss, exportTheme, lcdConfig, listLcdThemes, saveLcdTheme, uploadLcdTheme, selectDraftLcdTheme, deleteLcdTheme, activeLcdConfig, draftLcdConfig }
 }

@@ -17,8 +17,8 @@
             placeholder="新方案名称"
             @keydown.enter="confirmSaveAs()"
           />
-          <Button size="small" type="primary" @click="confirmSaveAs()">保存</Button>
-          <Button size="small" @click="closeSaveAs()">取消</Button>
+          <Button size="small" type="primary" :disabled="saveAsSubmitting" @click="confirmSaveAs()">{{ saveAsSubmitting ? '同步中…' : '保存' }}</Button>
+          <Button size="small" :disabled="saveAsSubmitting" @click="closeSaveAs()">取消</Button>
         </template>
         <template v-else>
           <Button size="small" @click="openSaveAs()">另存为</Button>
@@ -76,7 +76,7 @@
         :value="secondarySource?.kind || 'reveal-md'"
         :options="[
           { label: 'PPTist 文档（服务端上传）', value: 'pptist-remote' },
-          { label: 'Reveal / Markdown', value: 'reveal-md' },
+          { label: 'Studio 页面（CSS / HTML）', value: 'reveal-md' },
         ]"
         @update:value="v => switchSecondaryKind(v as 'pptist-remote' | 'reveal-md')"
       />
@@ -85,9 +85,9 @@
           class="md-path"
           :value="secondarySource?.mdPath || ''"
           @update:value="(v: string) => showFlowStore.updateSecondarySource({ mdPath: v })"
-          placeholder="Reveal Markdown 路径，如 /reveal/slides.md"
+          placeholder="Studio 原内容地址：/api/studio/slides/active/raw"
         />
-        <span class="meta">副屏页地址：/reveal/</span>
+        <span class="meta">副屏页地址：/reveal/ · HTML 在 Studio 页面主题中上传发布</span>
       </template>
       <template v-else>
         <span class="meta">文档来源：服务端「副屏文稿」槽位（/upload 页选择「副屏文稿（PPTist B）」上传），与主屏完全独立；副屏页地址：/secondary</span>
@@ -263,9 +263,13 @@ const openSaveAs = () => {
   saveAsVisible.value = true
 }
 const closeSaveAs = () => { saveAsVisible.value = false }
-const confirmSaveAs = () => {
-  showFlowStore.saveAsNewScheme(saveAsName.value)
-  saveAsVisible.value = false
+const saveAsSubmitting = ref(false)
+const confirmSaveAs = async () => {
+  if (saveAsSubmitting.value) return
+  saveAsSubmitting.value = true
+  const synced = await showFlowStore.saveAsNewScheme(saveAsName.value)
+  saveAsSubmitting.value = false
+  if (synced) saveAsVisible.value = false
 }
 
 /** 删除方案：两次点击确认（避免 confirm 在内嵌浏览器中不可用） */
@@ -399,12 +403,12 @@ const switchSecondaryKind = (kind: 'pptist-remote' | 'reveal-md') => {
   if (secondarySource.value?.kind === kind) return
   showFlowStore.updateSecondarySource({
     kind,
-    name: kind === 'pptist-remote' ? '副屏 PPTist（服务端上传文稿）' : '副屏 Reveal / Markdown',
+    name: kind === 'pptist-remote' ? '副屏 PPTist（服务端上传文稿）' : '副屏 Studio（CSS / HTML）',
   })
 }
 
-const refreshSecondary = () => {
-  showFlowStore.refreshSecondaryManifest()
+const refreshSecondary = async () => {
+  await showFlowStore.refreshSecondaryManifest()
   showFlowStore.reconcile('secondary')
 }
 

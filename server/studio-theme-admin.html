@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ShowFlow Studio · 页面主题</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;height:100%;font-family:Arial,"Microsoft YaHei",sans-serif;color:#263247;background:#f4f6f9}button,input,textarea{font:inherit}button{border:1px solid #cdd4df;background:#fff;border-radius:6px;padding:8px 12px;color:#344057;cursor:pointer}button:hover{border-color:#8fa7cb}.primary{background:#2867e8;color:#fff;border-color:#2867e8}.danger{color:#c43a3a}.studio{height:100vh;display:grid;grid-template:64px 1fr/180px 1fr}.top{grid-column:1/3;background:#fff;border-bottom:1px solid #dfe4ec;display:flex;align-items:center;padding:0 22px;gap:20px}.brand{display:flex;gap:12px;align-items:baseline}.brand strong{font-size:19px}.brand span{color:#8993a4}.state{margin-left:auto;padding:7px 12px;border-radius:16px;font-size:13px}.dirty{background:#fff1d6;color:#9a6200}.published{background:#e1f7eb;color:#137846}.nav{background:#202a3b;padding:18px 12px;display:flex;flex-direction:column;gap:7px}.nav a{color:#bac5d5;text-decoration:none;padding:11px;border-radius:6px}.nav a.active,.nav a:hover{background:#34425a;color:#fff}.nav a.bottom{margin-top:auto}.main{display:grid;grid-template-columns:380px 1fr;gap:1px;background:#dfe4ec;min-width:0;overflow:hidden}.panel{background:#fff;padding:24px;overflow:auto;min-width:0}.panel h2{margin:0 0 8px}.hint{color:#697588;line-height:1.65;margin:0 0 14px}.download{display:flex;gap:8px;margin:10px 0 16px}.download a{border:1px solid #cdd4df;border-radius:6px;padding:8px;text-decoration:none;color:#285fc0;background:#f7f9fc;font-size:12px}.uploadbox{display:block;border:1px dashed #9eb1ca;border-radius:8px;padding:14px;background:#f8fbff;color:#285fc0;margin:8px 0 16px}.uploadbox b{display:block;margin-bottom:5px}.uploadbox small{display:block;color:#6c7c92;line-height:1.5;margin-bottom:9px}.theme{display:flex;gap:10px;align-items:center;border:1px solid #dfe4ec;border-radius:7px;padding:12px;margin-top:10px}.theme.chosen{border-color:#2867e8;background:#f1f6ff}.theme>span{min-width:0;flex:1}.theme b,.theme small{display:block;overflow-wrap:anywhere}.theme small{color:#16804c;margin-top:4px}.theme .warn{color:#a06a16}.actions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}.preview{display:flex;flex-direction:column}.preview-head{display:flex;justify-content:space-between;align-items:center;gap:10px}.preview-head h3{margin:0}.preview iframe{width:100%;aspect-ratio:16/9;border:0;background:#111;margin-top:14px;border-radius:8px}.note{padding:12px;background:#edf5ff;border-radius:6px;color:#285580;font-size:13px;line-height:1.65;margin-top:12px}.css-editor{margin-top:12px;border-top:1px solid #e5e9ef;padding-top:12px}.css-editor textarea{width:100%;height:220px;margin:10px 0;border:1px solid #cdd4df;border-radius:6px;padding:10px;font:13px/1.55 Consolas,monospace}.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#253348;color:#fff;padding:10px 16px;border-radius:7px;box-shadow:0 8px 30px rgba(0,0,0,.18);z-index:50;opacity:0;pointer-events:none;transition:.2s}.toast.show{opacity:1}.toast.error{background:#a83d3d}.empty{padding:24px;border:1px dashed #c4ccd8;border-radius:8px;color:#8190a3;text-align:center}.version{font-size:11px;color:#9aa5b5;margin-top:10px}@media(max-width:1000px){.studio{grid-template:58px 1fr/140px 1fr}.main{grid-template-columns:320px 1fr}.top{padding:0 14px}.panel{padding:16px}}
+</style>
+</head>
+<body>
+<div class="studio">
+<header class="top">
+  <div class="brand"><strong>ShowFlow Studio</strong><span>Reveal 页面主题</span></div>
+  <div id="state" class="state published">读取中</div>
+  <button id="publish" class="primary" disabled>发布 Draft</button>
+</header>
+<nav class="nav">
+  <a href="/studio/slides">页面内容</a>
+  <a class="active" href="/studio/theme">页面主题</a>
+  <a href="/studio/lcd">LCD 设计</a>
+  <a href="/studio/assets">素材库</a>
+  <a href="/studio/system">系统状态</a>
+  <a class="bottom" href="/showflow">打开联动编排</a>
+  <a href="/editor">打开 PPTist 编辑器</a>
+</nav>
+<main class="main">
+  <section class="panel">
+    <h2>Reveal 页面主题</h2>
+    <p class="hint">CSS 主题 ZIP 与完整 HTML 流程页共用这里。上传只加入主题库；设为 Draft 后先预览，点击顶部“发布 Draft”才影响正式副屏。</p>
+    <div class="download"><a href="/api/studio/themes/current/download?scope=active">下载当前正式主题</a><a href="/api/studio/themes/current/download?scope=draft">下载 Draft 主题</a></div>
+    <label class="uploadbox"><b>上传 CSS ZIP / HTML</b><small>CSS：ZIP 内必须包含 theme.css；HTML：上传自包含 .html / .htm 文件，图片、样式和脚本应内嵌。</small><input id="file" type="file" accept=".zip,.html,.htm" /></label>
+    <div id="themes"></div>
+    <div class="version">Studio HTML UI compat v3 · 不修改 ShowFlow / LCD / MQTT 协议</div>
+  </section>
+  <section class="panel preview">
+    <div class="preview-head"><h3>Draft Theme 预览</h3><button id="reload">刷新预览</button></div>
+    <iframe id="preview" allow="fullscreen"></iframe>
+    <div id="htmlNote" class="note" hidden>HTML 自带布局、样式与交互；此处仅为 Draft 预览，不注册正式副屏角色、不发送 ACK。发布后由原 <code>/reveal/</code> 副屏继续走老师既有 ShowFlow 协议。</div>
+    <details id="cssBox" class="css-editor"><summary>CSS 高级编辑</summary><textarea id="css" spellcheck="false"></textarea><button id="saveCss">保存 CSS Draft</button></details>
+  </section>
+</main>
+</div>
+<div id="toast" class="toast"></div>
+<script>
+(()=>{
+'use strict';
+const $=s=>document.querySelector(s);let status=null,themes=[],busy=false,toastTimer;
+function toast(msg,error=false){const el=$('#toast');el.textContent=msg;el.className='toast show'+(error?' error':'');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.className='toast',3200)}
+async function json(url,opt){const r=await fetch(url,{cache:'no-store',...opt});let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.error||('请求失败 '+r.status));return data}
+function activeDraft(){return status?.draftRevealTheme||status?.activeRevealTheme||'default'}
+function currentTheme(){return themes.find(t=>t.id===activeDraft())||themes.find(t=>t.id==='default')}
+function updateTop(){const dirty=!!status?.dirty;const el=$('#state');el.textContent=dirty?'已保存为草稿 · 未发布':'已发布';el.className='state '+(dirty?'dirty':'published');$('#publish').disabled=busy||!dirty}
+function previewUrl(){const id=activeDraft();return '/reveal/?studio=draft&studioPage=0&studioTheme='+encodeURIComponent(id)}
+function render(){updateTop();const box=$('#themes');box.innerHTML='';if(!themes.length){box.innerHTML='<div class="empty">暂无主题</div>';return}for(const t of themes){const row=document.createElement('article');row.className='theme'+(t.draft?' chosen':'');const meta=t.kind==='html'?`HTML · ${t.pageCount||1} 个画面`:'CSS 主题';row.innerHTML=`<span><b></b><small class="kind"></small><small class="stateText"></small><small class="warn"></small></span><div class="actions"></div>`;row.querySelector('b').textContent=t.name||t.id;row.querySelector('.kind').textContent=meta;row.querySelector('.stateText').textContent=t.active?'当前正式':t.draft?'Draft 预览':'';row.querySelector('.warn').textContent=t.warning||'';const actions=row.querySelector('.actions');const select=document.createElement('button');select.textContent='设为 Draft';select.disabled=busy;select.onclick=()=>selectTheme(t.id);actions.append(select);if(t.id!=='default'&&!t.active&&!t.draft){const del=document.createElement('button');del.className='danger';del.textContent='删除';del.onclick=()=>deleteTheme(t.id);actions.append(del)}box.append(row)}const cur=currentTheme();$('#preview').src=previewUrl()+'&v='+Date.now();const isHtml=cur?.kind==='html';$('#htmlNote').hidden=!isHtml;$('#cssBox').hidden=isHtml;loadCss().catch(()=>{})}
+async function load(){const [s,t]=await Promise.all([json('/api/studio/slides'),json('/api/studio/themes')]);status=s.status;themes=t.themes||[];render()}
+async function loadCss(){if($('#cssBox').hidden)return;const r=await fetch('/api/studio/themes/draft/css',{cache:'no-store'});if(r.ok){const data=await r.json();$('#css').value=data.css||''}}
+async function upload(file){if(!file)return;if(!/\.(zip|html|htm)$/i.test(file.name))throw new Error('请选择 CSS ZIP 或 HTML 文件');const max=/\.zip$/i.test(file.name)?20:32;if(file.size>max*1024*1024)throw new Error(`文件不能超过 ${max}MB`);busy=true;updateTop();try{const data=await json('/api/studio/themes/upload',{method:'POST',headers:{'X-Filename':encodeURIComponent(file.name),'Content-Type':'application/octet-stream'},body:file});toast(data.theme?.kind==='html'?`HTML 已加入主题库：识别 ${data.theme.pageCount||1} 个画面`:'CSS 主题已加入主题库');await load()}finally{busy=false;updateTop()}}
+async function selectTheme(id){busy=true;updateTop();try{const data=await json('/api/studio/themes/'+encodeURIComponent(id)+'/preview',{method:'POST'});status=data.status;toast('已设为 Draft，请先检查右侧预览');await load()}catch(e){toast(e.message,true)}finally{busy=false;updateTop()}}
+async function deleteTheme(id){if(!confirm('确认删除该主题？'))return;try{await json('/api/studio/themes/'+encodeURIComponent(id),{method:'DELETE'});toast('已删除');await load()}catch(e){toast(e.message,true)}}
+$('#file').addEventListener('change',async e=>{const f=e.target.files?.[0];try{await upload(f)}catch(err){toast(err.message,true)}finally{e.target.value=''}})
+$('#publish').onclick=async()=>{if(!confirm('确认发布当前 Draft？只更新流程副屏，不替换主屏 PPT。'))return;busy=true;updateTop();try{const data=await json('/api/studio/publish',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});status=data.status;toast('发布成功；正式副屏刷新后载入新版');await load()}catch(e){toast(e.message,true)}finally{busy=false;updateTop()}}
+$('#saveCss').onclick=async()=>{try{const data=await json('/api/studio/themes/draft/css',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({css:$('#css').value})});status=data.status;toast('CSS Draft 已保存');render()}catch(e){toast(e.message,true)}}
+$('#reload').onclick=()=>{$('#preview').src=previewUrl()+'&v='+Date.now()};
+load().catch(e=>toast(e.message,true));
+})();
+</script>
+</body>
+</html>

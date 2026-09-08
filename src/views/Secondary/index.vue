@@ -76,23 +76,25 @@ async function syncLoop() {
   if (syncing || syncStopped) return
   syncing = true
   try {
-    const meta = latestNotice && latestNotice.exists ? latestNotice : await fetchSecondaryDocCurrent()
-    // meta 可能为 null：服务端版本过旧（无此接口，SPA 回退返回 HTML）时 requestJson 解析失败返回 null
-    if (!meta || !meta.exists) {
-      if (phase.value === 'loading' || phase.value === 'error') phase.value = 'empty'
-      return
+    while (!syncStopped) {
+      const meta = latestNotice && latestNotice.exists ? latestNotice : await fetchSecondaryDocCurrent()
+      // meta 可能为 null：服务端版本过旧（无此接口，SPA 回退返回 HTML）时 requestJson 解析失败返回 null
+      if (!meta || !meta.exists) {
+        if (phase.value === 'loading' || phase.value === 'error') phase.value = 'empty'
+        return
+      }
+      if ((meta.seq || 0) <= loadedSeq.value) {
+        if (phase.value === 'loading') phase.value = 'playing'
+        return
+      }
+      const { bundle, seq } = await fetchSecondaryDocSlides()
+      if (seq <= loadedSeq.value) return
+      applyBundleToSlidesStore(bundle)
+      slidesStore.updateSlideIndex(0)
+      loadedSeq.value = seq
+      docName.value = bundle.title || meta.filename || '未命名文稿'
+      phase.value = 'playing'
     }
-    if ((meta.seq || 0) <= loadedSeq.value) {
-      if (phase.value === 'loading') phase.value = 'playing'
-      return
-    }
-    const { bundle, seq } = await fetchSecondaryDocSlides()
-    if (seq <= loadedSeq.value) return
-    applyBundleToSlidesStore(bundle)
-    slidesStore.updateSlideIndex(0)
-    loadedSeq.value = seq
-    docName.value = bundle.title || meta.filename || '未命名文稿'
-    phase.value = 'playing'
   }
   catch (error) {
     // 首次加载失败：进入错误态（可重试）；热更新失败：保持旧文稿继续播放

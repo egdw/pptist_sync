@@ -17,8 +17,8 @@ import { ShowFlowController } from './controller'
 import { LcdController } from './lcd/lcd-controller'
 import { publishPresentationMqtt } from '@/utils/presentation/bridge'
 import { buildPptistManifest } from './manifest'
-import { reconcileSteps } from './reconciliation'
-import { loadShowFlowState, loadShowFlowStateFromServer, migrateShowFlowState, saveShowFlowState, saveShowFlowStateToServer } from './persistence'
+import { reconcileStepsPreservingMissing } from './reconciliation'
+import { loadShowFlowState, loadShowFlowStateFromServer, migrateShowFlowState, saveShowFlowState, saveShowFlowStateToServer, stripShowFlowRuntimeState } from './persistence'
 import { ShowFlowWsClient, resolveShowFlowWsUrl } from './websocket/client'
 import type {
   ContentSource,
@@ -26,6 +26,7 @@ import type {
   PageManifest,
   ReconciliationReport,
   ShowFlow,
+  ShowFlowPersistence,
   ShowFlowPhase,
   ShowStep,
   StepTargetSnapshot,
@@ -53,19 +54,62 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const secondarySource = computed(() => sources.value.find(s => s.role === 'secondary'))
 
   let serverHydrated = false
-  const currentPersistence = () => ({
-      version: 2,
+  const currentPersistence = (): ShowFlowPersistence => {
+    const flows = flowList.value.map(stripShowFlowRuntimeState)
+    const activeFlow = flows.find(item => item.id === activeFlowId.value) ?? stripShowFlowRuntimeState(flow.value)
+    return {
+      version: 3,
+      serverRevision: persisted.serverRevision || 0,
       sources: sources.value,
-      flow: flow.value,
-      flows: flowList.value,
+      flow: activeFlow,
+      flows,
       activeFlowId: activeFlowId.value,
-    } as const)
-  const save = () => {
-    const state = currentPersistence()
+    }
+  }
+  let pendingServerState: ReturnType<typeof currentPersistence> | null = null
+  let pendingSaveWaiters: Array<(ok: boolean) => void> = []
+  let serverSaveRunning = false
+  const flushServerSaves = async () => {
+    if (serverSaveRunning) return
+    serverSaveRunning = true
+    try {
+      while (pendingServerState) {
+        const state = pendingServerState
+        const waiters = pendingSaveWaiters
+        pendingServerState = null
+        pendingSaveWaiters = []
+        try {
+          state.serverRevision = currentPersistence().serverRevision || 0
+          const revision = await saveShowFlowStateToServer(state)
+          persisted.serverRevision = revision
+          waiters.forEach(resolve => resolve(true))
+        }
+        catch (error) {
+          console.warn('[ShowFlow] 服务端方案保存失败，已保留本地缓存', error)
+          pendingServerState = null
+          pendingSaveWaiters.splice(0).forEach(resolve => resolve(false))
+          waiters.forEach(resolve => resolve(false))
+          message.error((error as Error).message || '方案同步失败，当前修改仅保存在本机', { duration: 4500 })
+        }
+      }
+    }
+    finally {
+      serverSaveRunning = false
+      if (pendingServerState) void flushServerSaves()
+    }
+  }
+  const save = (): Promise<boolean> => {
+    // 立即制作不可变快照：后续拖拽不能修改正在发送的旧请求。
+    const state = JSON.parse(JSON.stringify(currentPersistence())) as ReturnType<typeof currentPersistence>
     saveShowFlowState(state)
-    if (serverHydrated) void saveShowFlowStateToServer(state).catch(error => {
-      console.warn('[ShowFlow] 服务端方案保存失败，已保留本地缓存', error)
-    })
+    if (serverHydrated) {
+      // 合并高频拖拽产生的中间状态，并保证请求严格串行，杜绝旧请求后到覆盖新方案。
+      pendingServerState = state
+      const completion = new Promise<boolean>(resolve => pendingSaveWaiters.push(resolve))
+      void flushServerSaves()
+      return completion
+    }
+    return Promise.resolve(true)
   }
 
   let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -82,6 +126,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const mainManifest = ref<PageManifest[]>([])
   const secondaryManifest = ref<PageManifest[]>([])
   const secondaryManifestError = ref('')
+  const secondaryIsHtml = ref(false)
   /** 副屏为 PPTist 文稿时的原始 slides（编排页渲染缩略图用） */
   const secondarySlides = ref<import('@/types/slides').Slide[]>([])
 
@@ -128,8 +173,8 @@ export const useShowFlowStore = defineStore('showFlow', () => {
         onStepChange: snap => {
           snapshot.value = snap
           currentStepIndex.value = controller?.currentStepIndex ?? -1
-          flow.value.currentStepId = snap?.stepId
-          save()
+          // 当前步骤只属于本窗口的放映运行态。不要写回 flow，也不要保存共享方案：
+          // 空格翻页不应递增 serverRevision，更不应让其他窗口产生版本冲突。
         },
         onNotice: (text, type) => {
           if (type === 'error') message.error(text, { duration: 3000 })
@@ -188,6 +233,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
         return
       }
       secondaryManifest.value = await secondaryAdapter.getManifest()
+      secondaryIsHtml.value = secondaryAdapter instanceof RevealMarkdownScreenAdapter && secondaryAdapter.contentKind === 'html'
       secondarySlides.value = secondaryAdapter instanceof PptistRemoteScreenAdapter ? secondaryAdapter.getSlides() : []
       secondaryManifestError.value = ''
     }
@@ -209,14 +255,25 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     if (!manifest.length) return
     const sourceLabel = role === 'main' ? '主屏' : '副屏'
     const poolKey = role
-    const result = reconcileSteps(manifest, flow.value.steps, poolOf(poolKey as 'main' | 'secondary'), sourceLabel, role)
-    flow.value.steps = result.steps
-    poolOf(poolKey as 'main' | 'secondary').splice(0, poolOf(poolKey as 'main' | 'secondary').length, ...result.unmapped)
+    const currentPool = poolOf(poolKey)
+    const result = reconcileStepsPreservingMissing(manifest, flow.value.steps, currentPool, sourceLabel, role)
+    const stepsChanged = JSON.stringify(result.steps) !== JSON.stringify(flow.value.steps)
+    const poolChanged = JSON.stringify(result.unmapped) !== JSON.stringify(currentPool)
+    if (stepsChanged) flow.value.steps = result.steps
+    if (poolChanged) currentPool.splice(0, currentPool.length, ...result.unmapped)
     lastReport.value = result.report
+    if (result.preservedMissing) {
+      const text = `${sourceLabel}清单尚未完整加载或页面 ID 已变化；已保护 ${result.preservedMissing} 条引用，未删除任何步骤。`
+      if (role === 'secondary') secondaryManifestError.value = text
+      message.warning(text, { duration: 4500 })
+    }
+    else if (role === 'secondary') secondaryManifestError.value = ''
     if (result.report.messages.length || result.report.added || result.report.removedNodeRefs) {
       message.info(`${sourceLabel}源同步完成：保留 ${result.report.kept} · 新增 ${result.report.added} · 移除引用 ${result.report.removedNodeRefs}`, { duration: 3000 })
     }
-    save()
+    // 打开编排页或播放页时的无变化对账不能写服务端，否则多个窗口仅加载页面
+    // 就会互相递增 revision。只有对账确实修改方案时才持久化。
+    if (stepsChanged || poolChanged) save()
   }
 
   // 主屏 slides id 集合变化（增删/导入/替换文稿）时自动对账
@@ -247,7 +304,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   }
 
   /** 另存为新方案：深拷贝当前方案（含步骤），重命名后追加并切换过去 */
-  const saveAsNewScheme = (name?: string) => {
+  const saveAsNewScheme = async (name?: string) => {
     const copy: ShowFlow = JSON.parse(JSON.stringify(flow.value))
     copy.id = `flow-${Math.random().toString(36).slice(2, 10)}`
     copy.name = (name || '').trim() || `${flow.value.name} 副本`
@@ -256,8 +313,9 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     flowList.value.push(copy)
     activeFlowId.value = copy.id
     controller?.stop()
-    save()
-    message.success(`已保存为新方案「${copy.name}」`, { duration: 2000 })
+    const synced = await save()
+    if (synced) message.success(`已保存并同步新方案「${copy.name}」`, { duration: 2000 })
+    return synced
   }
 
   /** 删除当前方案（至少保留一个；仅有一个时清空步骤而非删除） */
@@ -305,6 +363,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
         // 服务端方案可能来自旧版本：先走迁移（mdPath 默认值升级等）
         const migrated = migrateShowFlowState(remote)
         sources.value = migrated.sources?.length ? migrated.sources : sources.value
+        persisted.serverRevision = migrated.serverRevision || 0
         flowList.value = migrated.flows?.length ? migrated.flows : [migrated.flow]
         activeFlowId.value = migrated.activeFlowId && flowList.value.some(item => item.id === migrated.activeFlowId)
           ? migrated.activeFlowId : flowList.value[0].id
@@ -312,11 +371,12 @@ export const useShowFlowStore = defineStore('showFlow', () => {
       }
       serverHydrated = true
       // 服务端尚无方案时，用当前电脑的本地缓存初始化共享方案。
-      if (!remote) await saveShowFlowStateToServer(currentPersistence())
+      if (!remote) persisted.serverRevision = await saveShowFlowStateToServer(currentPersistence())
     }
     catch (error) {
       serverHydrated = true
       console.warn('[ShowFlow] 服务端方案不可用，暂用本地缓存', error)
+      message.error((error as Error).message || '服务端方案不可用，当前使用本地缓存', { duration: 4500 })
     }
 
     mainAdapter = new PptistScreenAdapter()
@@ -366,6 +426,10 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const controllerReady = computed(() => flow.value.enabled)
 
   const startShow = async () => {
+    if (secondaryIsHtml.value && flow.value.steps.some(step => step.secondary?.action === 'goto' && !secondaryManifest.value.some(p => p.id === step.secondary?.pageId))) {
+      message.error('有旧副屏页面尚未绑定到 HTML，请先在编排页核对；不会按页号自动替换。')
+      return
+    }
     if (!controller) controller = createController()
     if (flow.value.steps.length) await controller.start(0)
   }
@@ -515,8 +579,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     sources.value[idx] = { ...sources.value[idx], ...patch }
     secondaryManifest.value = []
     save()
-    refreshSecondaryManifest()
-    reconcile('secondary')
+    void refreshSecondaryManifest().then(() => reconcile('secondary'))
   }
 
   /**
