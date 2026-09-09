@@ -414,12 +414,17 @@ const prepareMainDeckV3 = async (sessionId: string) => {
   const sessionUrl = `${API}/upload-sessions/${sessionId}`
   const total = v3.slides.length
 
+  // 跨页面共享去重：同一图片（同一 blob URL）可能被多个元素/多页复用，
+  // 上传一次映射为资产 URL；全部页面处理完后统一 revoke（提前 revoke 会让后续元素 fetch 失败）
+  const gifAssetByUrl = new Map<string, string>()
+  const allBlobUrls = new Set<string>()
+
   for (let i = 0; i < total; i++) {
     const slide = v3.slides[i]
     statusText.value = `生成页面图片（${i + 1}/${total}）...`
     progressPercent.value = Math.round((i / total) * 70)
 
-    // 1. 整页离屏渲染为 PNG（全部静态内容含 GIF 首帧烘焙进底图）
+    // 1. 整页离屏渲染为 PNG（全部静态内容含 GIF 首帧烘焙进底图；空 src 图片元素已剔除）
     const pngDataUrl = await renderSlideToPngDataUrl(slide, viewportSize, viewportRatio)
     const pagePut = await fetch(`${sessionUrl}/assets`, {
       method: 'PUT',
@@ -429,22 +434,26 @@ const prepareMainDeckV3 = async (sessionId: string) => {
     if (!pagePut.ok) throw new Error(`页面图片上传失败（${pagePut.status}）`)
     const pageAsset = (await pagePut.json()).name
 
-    // 2. GIF 元素：字节原样上传为动图资产，作为唯一保留的「活」元素（覆盖在底图对应位置上播放）；
+    // 2. GIF 元素：字节原样上传为动图资产（去重），作为唯一保留的「活」元素；
     //    其余元素（文本/形状/静态图）已烘焙进底图，从活元素中移除避免双重渲染
     const overlays: PPTImageElement[] = []
     for (const el of slide.elements) {
       if (el.type !== 'image' || !el.src?.startsWith('blob:')) continue
-      const blob = await (await fetch(el.src)).blob()
-      if (blob.type !== 'image/gif') continue // 静态图：已烘焙
-      const gifPut = await fetch(`${sessionUrl}/assets`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'image/gif', 'X-Asset-Ext': 'gif' },
-        body: blob,
-      })
-      if (!gifPut.ok) throw new Error(`GIF 上传失败（${gifPut.status}）`)
-      const asset = (await gifPut.json()).name
-      URL.revokeObjectURL(el.src)
-      overlays.push({ ...el, src: `${API}/assets/${asset}` })
+      allBlobUrls.add(el.src)
+      let assetUrl = gifAssetByUrl.get(el.src)
+      if (!assetUrl) {
+        const blob = await (await fetch(el.src)).blob()
+        if (blob.type !== 'image/gif') continue // 静态图：已烘焙
+        const gifPut = await fetch(`${sessionUrl}/assets`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'image/gif', 'X-Asset-Ext': 'gif' },
+          body: blob,
+        })
+        if (!gifPut.ok) throw new Error(`GIF 上传失败（${gifPut.status}）`)
+        assetUrl = `${API}/assets/${(await gifPut.json()).name}`
+        gifAssetByUrl.set(el.src, assetUrl)
+      }
+      overlays.push({ ...el, src: assetUrl })
     }
 
     // 页面重写为「整页底图 + GIF 覆盖层」——标准 Slide 结构，播放端零改动
@@ -452,6 +461,8 @@ const prepareMainDeckV3 = async (sessionId: string) => {
     slide.background = { type: 'image', image: { src: `${API}/assets/${pageAsset}`, size: 'cover' } }
     progressPercent.value = Math.round(((i + 1) / total) * 70)
   }
+
+  for (const url of allBlobUrls) URL.revokeObjectURL(url)
 }
 
 const upload = async () => {

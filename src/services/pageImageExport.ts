@@ -22,6 +22,22 @@ async function waitAssetsReady(): Promise<void> {
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
 }
 
+// 1x1 透明占位：资源缺失/无法嵌入时使用，避免 html-to-image 因取不到图而整体失败
+const PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+/** 剔除解析产物中的空图片元素：pptxtojson 对提取失败的图片给出空 base64，
+ *  <img src=""> 会被浏览器解析为当前页面 URL，html-to-image 嵌图时会把整页 HTML 当图片拉取导致失败 */
+function sanitizeSlide(slide: Slide): Slide {
+  const cleaned: Slide = { ...slide }
+  if (Array.isArray(slide.elements)) {
+    cleaned.elements = slide.elements.filter(el => {
+      if (el.type === 'image') return !!el.src
+      return true
+    }) as Slide['elements']
+  }
+  return cleaned
+}
+
 /** 渲染单页为 PNG dataURL（调用方负责提供页面所在的 Pinia 上下文数据） */
 export async function renderSlideToPngDataUrl(
   slide: Slide,
@@ -29,6 +45,7 @@ export async function renderSlideToPngDataUrl(
   viewportRatio: number,
   width = RENDER_WIDTH,
 ): Promise<string> {
+  const safeSlide = sanitizeSlide(slide)
   const host = document.createElement('div')
   host.style.cssText = 'position:fixed;left:-99999px;top:0;margin:0;padding:0;'
   document.body.appendChild(host)
@@ -42,7 +59,7 @@ export async function renderSlideToPngDataUrl(
       store.setViewportRatio(viewportRatio)
       const scale = computed(() => width / viewportSize)
       app.provide(injectKeySlideScale, scale)
-      return () => h(ThumbnailSlide, { slide, size: width, visible: true })
+      return () => h(ThumbnailSlide, { slide: safeSlide, size: width, visible: true })
     },
   })
   app.use(pinia)
@@ -53,7 +70,7 @@ export async function renderSlideToPngDataUrl(
     await waitAssetsReady()
     const node = host.firstElementChild as HTMLElement
     if (!node) throw new Error('页面渲染失败')
-    return await toPng(node, { pixelRatio: 1 })
+    return await toPng(node, { pixelRatio: 1, imagePlaceholder: PLACEHOLDER })
   }
   finally {
     app.unmount()
