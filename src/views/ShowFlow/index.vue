@@ -387,7 +387,11 @@ const renameStep = (stepId: string, label: string) => showFlowStore.renameStep(s
 const dismissReport = () => { lastReport.value = null }
 
 const { enterScreening } = useScreening()
-const enterScreeningWithFlow = () => enterScreening()
+// 开始联动放映：先强制接管控制台（挤掉残留的其他窗口），再进入放映——省去手动点「接管控制台」
+const enterScreeningWithFlow = () => {
+  showFlowStore.takeoverController()
+  enterScreening()
+}
 
 const openSecondaryScreen = () => {
   // 注意：不能带尾斜杠 —— base 为相对路径时 /secondary/ 会导致资源解析到 /secondary/assets/ 404

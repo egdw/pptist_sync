@@ -23,7 +23,8 @@ export function createDefaultFlow(): ShowFlow {
   return {
     id: `flow-${nanoid(8)}`,
     name: '未命名联动流程',
-    enabled: false,
+    // 多屏联动默认启用：打开编排页/放映即联动模式，无需手动打开开关
+    enabled: true,
     confirmationEnabled: true,
     confirmationMode: 'strict',
     mainSourceId: 'main-pptist',
@@ -55,6 +56,8 @@ export function migrateShowFlowState(parsed: ShowFlowPersistence): ShowFlowPersi
       source.mdPath = defaultSecondarySource().mdPath
     }
   }
+  // 多屏联动默认启用：旧方案里存储的 enabled:false 一律升级为 true（联动即默认工作模式）
+  for (const flow of flows) flow.enabled = true
   // 旧版缓存可能缺 main/secondary 源（缺 secondary 会导致副屏池永远为空）
   const sources = parsed.sources?.length ? [...parsed.sources] : defaultSources()
   if (!sources.some(s => s.role === 'main')) {
