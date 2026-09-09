@@ -6,12 +6,19 @@ export function drawDefaultTemplate(ctx, state, role, portrait, rawTheme = {}) {
   const cfg = ROLE_CONFIG[role]
   const bounded = (value, fallback, min, max) => Math.min(max, Math.max(min, Number(value) || fallback))
   const colorHex = value => (/^#[0-9a-f]{6}$/i.test(value) ? value : '')
+  const css = String(rawTheme.customCss || '')
+  const cssSize = (name, fallback, min, max) => bounded(readCssPixels(css, name), fallback, min, max)
   const theme = {
     background: colorHex(rawTheme.background) || '#101b31',
-    taskFontSize: bounded(rawTheme.taskFontSize, 54, 36, 72),
-    roleFontSize: bounded(rawTheme.roleFontSize, 68, 44, 82),
-    stageFontSize: bounded(rawTheme.stageFontSize, 50, 34, 72),
-    maxTaskLines: Math.round(bounded(rawTheme.maxTaskLines, 2, 1, 2)),
+    taskFontSize: bounded(rawTheme.taskFontSize, 54, 24, 86),
+    roleFontSize: bounded(rawTheme.roleFontSize, 68, 28, 82),
+    stageFontSize: bounded(rawTheme.stageFontSize, 50, 28, 82),
+    maxTaskLines: Math.round(bounded(rawTheme.maxTaskLines, 2, 1, 4)),
+    stageLabelFontSize: cssSize('--lcd-stage-label-font-size', rawTheme.stageLabelFontSize || 28, 18, 40),
+    roleIndexFontSize: cssSize('--lcd-role-index-font-size', rawTheme.roleIndexFontSize || 32, 20, 48),
+    taskLabelFontSize: cssSize('--lcd-task-label-font-size', rawTheme.taskLabelFontSize || 27, 18, 40),
+    badgeFontSize: cssSize('--lcd-badge-font-size', rawTheme.badgeFontSize || 29, 18, 36),
+    footerFontSize: cssSize('--lcd-footer-font-size', rawTheme.footerFontSize || 25, 18, 34),
     // 头像缩放系数：1 = 原图 contain 恰好填满舞台内区，默认 0.8 留出呼吸空间
     portraitScale: bounded(rawTheme.portraitScale, 0.8, 0.35, 1),
     // 可选主题字段：非活跃文字色与岗位主色覆盖（lcd-theme.json 高级编辑）
@@ -24,30 +31,40 @@ export function drawDefaultTemplate(ctx, state, role, portrait, rawTheme = {}) {
 
   drawBackground(ctx, theme.background, accent, active)
 
-  // 顶部：只保留环节和状态，减少重复信息。
+  // 左栏使用明确的纵向区域。字号变大时文字在自己的区域内自适应，
+  // 不再因为固定基线向上侵入标签或向下压住下一组标题。
   ctx.fillStyle = active ? accent : muted
   ctx.roundRect(50, 42, 9, 95, 5); ctx.fill()
-  ctx.font = '28px LedDisplay, sans-serif'
+  ctx.font = `${theme.stageLabelFontSize}px LedDisplay, sans-serif`
   ctx.fillStyle = active ? '#9fdcff' : '#8290a5'
   ctx.fillText('当前环节', 82, 76)
   ctx.fillStyle = active ? '#ffffff' : '#aab3c4'
-  drawWrapped(ctx, state.stage || '—', 82, 130, 670, 1, theme.stageFontSize, theme.stageFontSize + 6)
+  drawTextInBox(ctx, state.stage || '—', {
+    x: 82, top: 84, width: 470, height: 82,
+    maxLines: 1, preferredSize: theme.stageFontSize, minSize: 28,
+  })
 
-  drawStatus(ctx, active, lead, accent)
+  drawStatus(ctx, active, lead, accent, theme.badgeFontSize)
 
   // 岗位作为第一视觉层级，不在人物下方重复岗位名称。
   ctx.fillStyle = active ? accent : muted
-  ctx.font = 'bold 32px LedDisplay, sans-serif'
+  ctx.font = `bold ${theme.roleIndexFontSize}px LedDisplay, sans-serif`
   ctx.fillText(ROLE_INDEX[role] || '—', 82, 236)
   ctx.fillStyle = active ? '#ffffff' : '#a8b2c2'
-  drawWrapped(ctx, cfg.name, 82, 310, 690, 2, theme.roleFontSize, theme.roleFontSize + 10)
+  drawTextInBox(ctx, cfg.name, {
+    x: 82, top: 250, width: 650, height: 180,
+    maxLines: 2, preferredSize: theme.roleFontSize, minSize: 28,
+  })
 
-  // 当前任务只保留两行，并明显放大。
+  // 当前任务支持主题设置的行数；超出安全区域时自动缩小或省略。
   ctx.fillStyle = active ? accent : muted
-  ctx.font = '27px LedDisplay, sans-serif'
-  ctx.fillText('当前任务', 82, 492)
+  ctx.font = `${theme.taskLabelFontSize}px LedDisplay, sans-serif`
+  ctx.fillText('当前任务', 82, 478)
   ctx.fillStyle = active ? '#f6fbff' : '#9aa6b7'
-  drawWrapped(ctx, state.roles?.[role]?.task || '—', 82, 558, 650, theme.maxTaskLines, theme.taskFontSize, theme.taskFontSize + 15)
+  drawTextInBox(ctx, state.roles?.[role]?.task || '—', {
+    x: 82, top: 500, width: 650, height: 196,
+    maxLines: theme.maxTaskLines, preferredSize: theme.taskFontSize, minSize: 24,
+  })
 
   drawPortraitStage(ctx, portrait, accent, active, theme.portraitScale)
 
@@ -56,8 +73,8 @@ export function drawDefaultTemplate(ctx, state, role, portrait, rawTheme = {}) {
   ctx.roundRect(78, 718, 646, 46, 23); ctx.fill()
   ctx.fillStyle = active ? accent : muted
   ctx.beginPath(); ctx.arc(106, 741, 7, 0, Math.PI * 2); ctx.fill()
-  ctx.font = '25px LedDisplay, sans-serif'
-  ctx.fillText(active ? (lead ? '当前主责 · 工作进行中' : '协同岗位 · 工作进行中') : '等待当前环节', 128, 750)
+  ctx.font = `${theme.footerFontSize}px LedDisplay, sans-serif`
+  ctx.fillText(active ? (lead ? '当前任务主要负责人 · 工作进行中' : '协同岗位 · 工作进行中') : '等待当前环节', 128, 750)
 }
 
 function drawBackground(ctx, base, accent, active) {
@@ -92,11 +109,12 @@ function drawBackground(ctx, base, accent, active) {
   ctx.fillRect(49, 174, 686, 2)
 }
 
-function drawStatus(ctx, active, lead, accent) {
-  const label = active ? (lead ? '当前主责' : '协同进行') : '准备中'
-  ctx.font = 'bold 29px LedDisplay, sans-serif'
+function drawStatus(ctx, active, lead, accent, fontSize) {
+  const label = active ? (lead ? '当前任务主要负责人' : '协助任务人员') : '准备中'
+  ctx.font = `bold ${fontSize}px LedDisplay, sans-serif`
   const width = Math.ceil(ctx.measureText(label).width) + 70
-  const x = 760 - width
+  // 长标签放在人物区上方居中，与左侧“当前环节”彻底分栏。
+  const x = 775 + (475 - width) / 2
   ctx.fillStyle = active ? `${accent}25` : 'rgba(255,255,255,.055)'
   ctx.strokeStyle = active ? `${accent}aa` : '#39465a'
   ctx.lineWidth = 2
@@ -104,7 +122,7 @@ function drawStatus(ctx, active, lead, accent) {
   ctx.fillStyle = active ? accent : '#79879b'
   ctx.beginPath(); ctx.arc(x + 24, 74, 7, 0, Math.PI * 2); ctx.fill()
   ctx.fillStyle = active ? '#ffffff' : '#9da8b8'
-  ctx.fillText(label, x + 43, 84)
+  ctx.save(); ctx.textBaseline = 'middle'; ctx.fillText(label, x + 43, 74); ctx.restore()
 }
 
 function drawPortraitStage(ctx, portrait, accent, active, portraitScale) {
@@ -152,11 +170,55 @@ function wrapText(ctx, text, maxWidth) {
     else line += char
   }
   if (line) lines.push(line)
+  // 避免中文岗位名出现“上一行很长、末行只剩一个字”的孤字排版。
+  if (lines.length > 1) {
+    const last = lines.length - 1
+    while (lines[last - 1].length > 1 && ctx.measureText(lines[last]).width < ctx.measureText(lines[last - 1]).width * .55) {
+      const moved = lines[last - 1].slice(-1)
+      if (ctx.measureText(moved + lines[last]).width > maxWidth) break
+      lines[last - 1] = lines[last - 1].slice(0, -1)
+      lines[last] = moved + lines[last]
+    }
+  }
   return lines
 }
 
-function drawWrapped(ctx, text, x, y, maxWidth, maxLines, fontSize, lineHeight) {
+function readCssPixels(css, property) {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = css.match(new RegExp(`${escaped}\\s*:\\s*(-?\\d+(?:\\.\\d+)?)px`, 'i'))
+  return match ? Number(match[1]) : 0
+}
+
+function drawTextInBox(ctx, text, options) {
+  const { x, top, width, height, maxLines, preferredSize, minSize } = options
+  let fontSize = preferredSize
+  let lines = []
+  let lineHeight = 0
+
+  // 同时满足宽度、最大行数和区域高度；优先保留用户选择的大字号。
+  for (; fontSize >= minSize; fontSize--) {
+    ctx.font = `bold ${fontSize}px LedDisplay, sans-serif`
+    lines = wrapText(ctx, text, width)
+    lineHeight = Math.ceil(fontSize * 1.18)
+    if (lines.length <= maxLines && lines.length * lineHeight <= height) break
+  }
+  fontSize = Math.max(minSize, fontSize)
+  lineHeight = Math.ceil(fontSize * 1.18)
+
   ctx.font = `bold ${fontSize}px LedDisplay, sans-serif`
-  const lines = wrapText(ctx, text, maxWidth).slice(0, maxLines)
-  lines.forEach((line, i) => ctx.fillText(line, x, y + i * lineHeight))
+  lines = wrapText(ctx, text, width)
+  const clipped = lines.length > maxLines
+  lines = lines.slice(0, maxLines)
+  if (clipped && lines.length) lines[lines.length - 1] = ellipsize(ctx, lines[lines.length - 1], width)
+
+  ctx.save()
+  ctx.textBaseline = 'top'
+  lines.forEach((line, i) => ctx.fillText(line, x, top + i * lineHeight))
+  ctx.restore()
+}
+
+function ellipsize(ctx, text, maxWidth) {
+  let value = String(text)
+  while (value && ctx.measureText(`${value}…`).width > maxWidth) value = value.slice(0, -1)
+  return `${value}…`
 }

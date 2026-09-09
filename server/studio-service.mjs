@@ -35,7 +35,12 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
   const assetsDir = path.join(studioDir, 'assets')
   const themesDir = path.join(studioDir, 'themes')
   const lcdThemesDir = path.join(studioDir, 'lcd-themes')
-  const defaultLcdTheme = { background: '#101b31', taskFontSize: 46, roleFontSize: 60, stageFontSize: 56, maxTaskLines: 3, portraitScale: 0.8 }
+  const defaultLcdTheme = {
+    background: '#101b31', taskFontSize: 46, roleFontSize: 60, stageFontSize: 56,
+    stageLabelFontSize: 28, roleIndexFontSize: 32, taskLabelFontSize: 27,
+    badgeFontSize: 29, footerFontSize: 25,
+    maxTaskLines: 3, portraitScale: 0.8, customCss: '',
+  }
   let writeChain = Promise.resolve()
   function serialize(task) {
     writeChain = writeChain.catch(() => {}).then(task)
@@ -375,8 +380,14 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
       taskFontSize: bounded(raw?.taskFontSize, 46, 24, 86),
       roleFontSize: bounded(raw?.roleFontSize, 60, 28, 82),
       stageFontSize: bounded(raw?.stageFontSize, 56, 28, 82),
+      stageLabelFontSize: bounded(raw?.stageLabelFontSize, 28, 18, 40),
+      roleIndexFontSize: bounded(raw?.roleIndexFontSize, 32, 20, 48),
+      taskLabelFontSize: bounded(raw?.taskLabelFontSize, 27, 18, 40),
+      badgeFontSize: bounded(raw?.badgeFontSize, 29, 18, 36),
+      footerFontSize: bounded(raw?.footerFontSize, 25, 18, 34),
       maxTaskLines: Math.round(bounded(raw?.maxTaskLines, 3, 1, 4)),
       portraitScale: bounded(raw?.portraitScale, 0.8, 0.35, 1),
+      customCss: typeof raw?.customCss === 'string' ? raw.customCss.slice(0, 4096) : '',
       // 可选：岗位主色覆盖（缺省用内置配色）与非活跃文字色
       ...(Object.keys(roleAccents).length ? { roleAccents } : {}),
       ...(raw?.inactiveColor ? { inactiveColor: color(raw.inactiveColor, '#65748d') } : {}),
@@ -394,10 +405,20 @@ LCD 画面由服务端 Canvas 渲染为 JPEG（1280x800），主题 = 一份 JSO
 | stageFontSize | 数值 | 28-82 | 56 | 顶部环节字号 |
 | roleFontSize | 数值 | 28-82 | 60 | 岗位名字号 |
 | taskFontSize | 数值 | 24-86 | 46 | 任务文字字号 |
+| stageLabelFontSize | 数值 | 18-40 | 28 | “当前环节”字号 |
+| roleIndexFontSize | 数值 | 20-48 | 32 | 岗位编号字号 |
+| taskLabelFontSize | 数值 | 18-40 | 27 | “当前任务”字号 |
+| badgeFontSize | 数值 | 18-36 | 29 | 顶部负责人/协助人员徽标字号 |
+| footerFontSize | 数值 | 18-34 | 25 | 底部工作状态字号 |
 | maxTaskLines | 数值 | 1-4 | 3 | 任务最大行数 |
 | portraitScale | 数值 | 0.35-1 | 0.8 | 头像缩放：1 为恰好填满右侧人物区，越小头像越小 |
 | roleAccents | 对象 | 可选 | 内置配色 | 岗位主色覆盖，如 {"manager":"#4f7cff"}（四岗：manager/platform/twin/hardware） |
 | inactiveColor | 颜色 | 可选 | #65748d | 非活跃岗位文字色 |
+| customCss | 字符串 | 可选 | 空 | CSS 变量微调区；支持下方五个字号变量 |
+
+customCss 支持：--lcd-stage-label-font-size、--lcd-role-index-font-size、
+--lcd-task-label-font-size、--lcd-badge-font-size、--lcd-footer-font-size。
+值必须使用 px；渲染器会继续执行范围限制与防溢出排版。
 
 ## 打包与上传
 ZIP 内必须包含 lcd-theme.json（仅允许 JSON 文件，≤20MB）。
