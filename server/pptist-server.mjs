@@ -626,6 +626,11 @@ const server = http.createServer(async (req, res) => {
       const themeDeleteMatch = pathname.match(/^\/api\/studio\/themes\/([^/]+)$/)
       if (req.method === 'DELETE' && themeDeleteMatch) { await studioService.deleteTheme(decodeURIComponent(themeDeleteMatch[1])); sendJson(res, 200, { ok: true }); return }
       if (req.method === 'GET' && pathname === '/api/studio/lcd/themes') { sendJson(res,200,{themes:await studioService.listLcdThemes()}); return }
+      if (req.method === 'GET' && pathname === '/api/studio/lcd/themes/current/download') {
+        const exported = await studioService.exportLcdTheme(url.searchParams.get('scope') || 'active')
+        res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="${exported.filename}"`, 'Content-Length': exported.data.length, 'Cache-Control': 'no-store' })
+        res.end(exported.data); return
+      }
       if (req.method === 'GET' && pathname === '/api/studio/lcd/themes/draft') { sendJson(res,200,await studioService.draftLcdConfig()); return }
       if (req.method === 'POST' && pathname === '/api/studio/lcd/themes/upload') { const data=await readRawBody(req,20*1024*1024); sendJson(res,200,{ok:true,theme:await studioService.uploadLcdTheme(decodeURIComponent(req.headers['x-filename']||''),data)}); return }
       if (req.method === 'PUT' && pathname === '/api/studio/lcd/themes/draft') { const body=await readJson(); sendJson(res,200,{ok:true,...await studioService.saveLcdTheme(body.id,body.config)}); return }

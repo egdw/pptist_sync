@@ -397,9 +397,11 @@ export const useShowFlowStore = defineStore('showFlow', () => {
           roleTaken.value = false
         }
         if (msg.type === 'ERROR' && msg.code === 'ROLE_TAKEN') {
-          // 本页被拒绝为 controller：另一窗口的控制台仍在线（可点「接管控制台」强制夺取）
+          // 本页被拒绝为 controller：另一窗口的控制台仍在线。
+          // 编辑器/主页等窗口也会静默连接（放映时仍可被 showflow 页强制接管），
+          // 提示只在编排页显示，避免正常使用被弹窗打扰。
           roleTaken.value = true
-          if (!roleTakenNotified) {
+          if (!roleTakenNotified && window.location.pathname.startsWith('/showflow')) {
             roleTakenNotified = true
             message.warning('已有控制台在其他窗口运行，可点「接管控制台」夺取', { duration: 3000 })
           }

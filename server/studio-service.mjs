@@ -364,8 +364,60 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
 
   function validateLcdConfig(raw) {
     const bounded = (value, fallback, min, max) => Math.min(max, Math.max(min, Number(value) || fallback))
-    return { background: /^#[0-9a-f]{6}$/i.test(raw?.background) ? raw.background : defaultLcdTheme.background, taskFontSize: bounded(raw?.taskFontSize, 46, 24, 86), roleFontSize: bounded(raw?.roleFontSize, 60, 28, 82), stageFontSize: bounded(raw?.stageFontSize, 56, 28, 82), maxTaskLines: Math.round(bounded(raw?.maxTaskLines, 3, 1, 4)) }
+    const color = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value) ? value : fallback
+    const roleAccents = {}
+    for (const role of ['manager', 'platform', 'twin', 'hardware']) {
+      const hex = color(raw?.roleAccents?.[role], '')
+      if (hex) roleAccents[role] = hex
+    }
+    return {
+      background: color(raw?.background, defaultLcdTheme.background),
+      taskFontSize: bounded(raw?.taskFontSize, 46, 24, 86),
+      roleFontSize: bounded(raw?.roleFontSize, 60, 28, 82),
+      stageFontSize: bounded(raw?.stageFontSize, 56, 28, 82),
+      maxTaskLines: Math.round(bounded(raw?.maxTaskLines, 3, 1, 4)),
+      // 可选：岗位主色覆盖（缺省用内置配色）与非活跃文字色
+      ...(Object.keys(roleAccents).length ? { roleAccents } : {}),
+      ...(raw?.inactiveColor ? { inactiveColor: color(raw.inactiveColor, '#65748d') } : {}),
+    }
   }
+
+  const LCD_THEME_PROTOCOL = `# LCD 主题包协议（lcd-theme.json）
+
+LCD 画面由服务端 Canvas 渲染为 JPEG（1280x800），主题 = 一份 JSON 配置（非 CSS）。
+
+## 字段
+| 字段 | 类型 | 范围 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| background | 颜色 | #RRGGBB | #101b31 | 画面背景基色 |
+| stageFontSize | 数值 | 28-82 | 56 | 顶部环节字号 |
+| roleFontSize | 数值 | 28-82 | 60 | 岗位名字号 |
+| taskFontSize | 数值 | 24-86 | 46 | 任务文字字号 |
+| maxTaskLines | 数值 | 1-4 | 3 | 任务最大行数 |
+| roleAccents | 对象 | 可选 | 内置配色 | 岗位主色覆盖，如 {"manager":"#4f7cff"}（四岗：manager/platform/twin/hardware） |
+| inactiveColor | 颜色 | 可选 | #65748d | 非活跃岗位文字色 |
+
+## 打包与上传
+ZIP 内必须包含 lcd-theme.json（仅允许 JSON 文件，≤20MB）。
+文件名即主题 ID（如 my-theme.zip → 主题 my-theme）。
+上传只加入主题库；「设为 Draft」预览 → 顶部「发布」后影响四块 LCD。
+
+## 调整方式
+小改：Studio → LCD 设计 的滑杆/取色器即改即渲染。
+全量：下载本包 → 改 lcd-theme.json → 重新上传 ZIP；或用「高级编辑(JSON)」直接改后保存 Draft。
+`
+
+  /** 导出 LCD 主题包：lcd-theme.json + 协议 README，可修改后重新上传 */
+  async function exportLcdTheme(scope = 'active') {
+    const meta = await readMeta()
+    const id = scope === 'draft' ? (meta.draftLcdTheme || meta.activeLcdTheme || 'default') : (meta.activeLcdTheme || 'default')
+    const config = await lcdConfig(id)
+    const zip = await openZip()
+    zip.addFile('lcd-theme.json', Buffer.from(JSON.stringify(config, null, 2)))
+    zip.addFile('README-协议.md', Buffer.from(LCD_THEME_PROTOCOL))
+    return { filename: `lcd-theme-${id}.zip`, data: zip.toBuffer() }
+  }
+
   async function lcdConfig(id) {
     if (!id || id === 'default') return { ...defaultLcdTheme }
     if (safeName(id) !== id) throw new Error('无效 LCD Theme ID')
@@ -397,5 +449,5 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
   async function activeLcdConfig() { const meta=await readMeta(); return lcdConfig(meta.activeLcdTheme||'default') }
   async function draftLcdConfig() { const meta=await readMeta(); return {id:meta.draftLcdTheme||meta.activeLcdTheme||'default',config:await lcdConfig(meta.draftLcdTheme||meta.activeLcdTheme||'default')} }
 
-  return { themeInfo, renderConfig, getHtml, studioDir, assetsDir, themesDir, lcdThemesDir, activeFile, draftFile, init, status, getSlides, getShowFlowSlidesRaw, saveDraft, publish, versions, restore, listAssets, saveAsset, deleteAsset, listPortraits, savePortrait, listThemes, uploadTheme, selectDraftTheme, deleteTheme, getDraftThemeCss, saveDraftThemeCss, exportTheme, lcdConfig, listLcdThemes, saveLcdTheme, uploadLcdTheme, selectDraftLcdTheme, deleteLcdTheme, activeLcdConfig, draftLcdConfig }
+  return { themeInfo, renderConfig, getHtml, studioDir, assetsDir, themesDir, lcdThemesDir, activeFile, draftFile, init, status, getSlides, getShowFlowSlidesRaw, saveDraft, publish, versions, restore, listAssets, saveAsset, deleteAsset, listPortraits, savePortrait, listThemes, uploadTheme, selectDraftTheme, deleteTheme, getDraftThemeCss, saveDraftThemeCss, exportTheme, lcdConfig, listLcdThemes, saveLcdTheme, uploadLcdTheme, selectDraftLcdTheme, deleteLcdTheme, activeLcdConfig, draftLcdConfig, exportLcdTheme }
 }

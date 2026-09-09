@@ -111,7 +111,7 @@
             @click="showFlowStore.addPageToStep('main', page.id)"
           >
             <div class="pool-thumb">
-              <ThumbnailSlide v-if="mainSlideOf(page.index)" :slide="mainSlideOf(page.index)!" :size="124" />
+              <ThumbnailSlide v-if="mainSlideOf(page.index)" :slide="mainSlideOf(page.index)!" :size="168" />
               <div class="thumb-fallback" v-else>{{ page.index }}</div>
             </div>
             <div class="pool-meta">
@@ -200,7 +200,7 @@
           >
             <template v-if="!isMdPool">
               <div class="pool-thumb">
-                <ThumbnailSlide v-if="secondarySlideOf(page.index)" :slide="secondarySlideOf(page.index)!" :size="124" />
+                <ThumbnailSlide v-if="secondarySlideOf(page.index)" :slide="secondarySlideOf(page.index)!" :size="168" />
                 <div class="thumb-fallback" v-else>{{ page.index }}</div>
               </div>
               <div class="pool-meta">
@@ -566,13 +566,13 @@ onMounted(() => {
 }
 
 .pool {
-  width: 24%;
-  min-width: 220px;
+  width: 19%;
+  min-width: 190px;
   display: flex;
   flex-direction: column;
   background: #fff;
   border-radius: 8px;
-  padding: 10px;
+  padding: 10px 8px;
 
   .pool-title {
     font-size: 13px;
@@ -613,7 +613,7 @@ onMounted(() => {
     display: flex;
     justify-content: center;
     background: #eef0f4;
-    padding: 6px;
+    padding: 4px;
 
     :deep(.thumbnail-slide) {
       // ThumbnailSlide 内的 .background 为 absolute 定位，必须建立定位上下文，否则色块逃逸到文档层

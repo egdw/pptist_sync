@@ -5,21 +5,25 @@ const ROLE_INDEX = { manager: '01', platform: '02', twin: '03', hardware: '04' }
 export function drawDefaultTemplate(ctx, state, role, portrait, rawTheme = {}) {
   const cfg = ROLE_CONFIG[role]
   const bounded = (value, fallback, min, max) => Math.min(max, Math.max(min, Number(value) || fallback))
+  const colorHex = value => (/^#[0-9a-f]{6}$/i.test(value) ? value : '')
   const theme = {
-    background: /^#[0-9a-f]{6}$/i.test(rawTheme.background) ? rawTheme.background : '#101b31',
+    background: colorHex(rawTheme.background) || '#101b31',
     taskFontSize: bounded(rawTheme.taskFontSize, 54, 36, 72),
     roleFontSize: bounded(rawTheme.roleFontSize, 68, 44, 82),
     stageFontSize: bounded(rawTheme.stageFontSize, 50, 34, 72),
     maxTaskLines: Math.round(bounded(rawTheme.maxTaskLines, 2, 1, 2)),
+    // 可选主题字段：非活跃文字色与岗位主色覆盖（lcd-theme.json 高级编辑）
+    inactiveColor: colorHex(rawTheme.inactiveColor) || '#65748d',
   }
   const active = state.active.includes(role)
   const lead = state.lead === role
-  const accent = cfg.accent
+  const accent = colorHex(rawTheme.roleAccents?.[role]) || cfg.accent
+  const muted = theme.inactiveColor
 
   drawBackground(ctx, theme.background, accent, active)
 
   // 顶部：只保留环节和状态，减少重复信息。
-  ctx.fillStyle = active ? accent : '#65748d'
+  ctx.fillStyle = active ? accent : muted
   ctx.roundRect(50, 42, 9, 95, 5); ctx.fill()
   ctx.font = '28px LedDisplay, sans-serif'
   ctx.fillStyle = active ? '#9fdcff' : '#8290a5'
@@ -30,14 +34,14 @@ export function drawDefaultTemplate(ctx, state, role, portrait, rawTheme = {}) {
   drawStatus(ctx, active, lead, accent)
 
   // 岗位作为第一视觉层级，不在人物下方重复岗位名称。
-  ctx.fillStyle = active ? accent : '#607188'
+  ctx.fillStyle = active ? accent : muted
   ctx.font = 'bold 32px LedDisplay, sans-serif'
   ctx.fillText(ROLE_INDEX[role] || '—', 82, 236)
   ctx.fillStyle = active ? '#ffffff' : '#a8b2c2'
   drawWrapped(ctx, cfg.name, 82, 310, 690, 2, theme.roleFontSize, theme.roleFontSize + 10)
 
   // 当前任务只保留两行，并明显放大。
-  ctx.fillStyle = active ? accent : '#6f7e92'
+  ctx.fillStyle = active ? accent : muted
   ctx.font = '27px LedDisplay, sans-serif'
   ctx.fillText('当前任务', 82, 492)
   ctx.fillStyle = active ? '#f6fbff' : '#9aa6b7'
@@ -48,7 +52,7 @@ export function drawDefaultTemplate(ctx, state, role, portrait, rawTheme = {}) {
   // 底部只给出轻量状态条，远距离也容易辨认。
   ctx.fillStyle = active ? `${accent}28` : 'rgba(255,255,255,.035)'
   ctx.roundRect(78, 718, 646, 46, 23); ctx.fill()
-  ctx.fillStyle = active ? accent : '#718096'
+  ctx.fillStyle = active ? accent : muted
   ctx.beginPath(); ctx.arc(106, 741, 7, 0, Math.PI * 2); ctx.fill()
   ctx.font = '25px LedDisplay, sans-serif'
   ctx.fillText(active ? (lead ? '当前主责 · 工作进行中' : '协同岗位 · 工作进行中') : '等待当前环节', 128, 750)
