@@ -35,7 +35,7 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
   const assetsDir = path.join(studioDir, 'assets')
   const themesDir = path.join(studioDir, 'themes')
   const lcdThemesDir = path.join(studioDir, 'lcd-themes')
-  const defaultLcdTheme = { background: '#101b31', taskFontSize: 46, roleFontSize: 60, stageFontSize: 56, maxTaskLines: 3 }
+  const defaultLcdTheme = { background: '#101b31', taskFontSize: 46, roleFontSize: 60, stageFontSize: 56, maxTaskLines: 3, portraitScale: 0.8 }
   let writeChain = Promise.resolve()
   function serialize(task) {
     writeChain = writeChain.catch(() => {}).then(task)
@@ -376,6 +376,7 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
       roleFontSize: bounded(raw?.roleFontSize, 60, 28, 82),
       stageFontSize: bounded(raw?.stageFontSize, 56, 28, 82),
       maxTaskLines: Math.round(bounded(raw?.maxTaskLines, 3, 1, 4)),
+      portraitScale: bounded(raw?.portraitScale, 0.8, 0.35, 1),
       // 可选：岗位主色覆盖（缺省用内置配色）与非活跃文字色
       ...(Object.keys(roleAccents).length ? { roleAccents } : {}),
       ...(raw?.inactiveColor ? { inactiveColor: color(raw.inactiveColor, '#65748d') } : {}),
@@ -394,6 +395,7 @@ LCD 画面由服务端 Canvas 渲染为 JPEG（1280x800），主题 = 一份 JSO
 | roleFontSize | 数值 | 28-82 | 60 | 岗位名字号 |
 | taskFontSize | 数值 | 24-86 | 46 | 任务文字字号 |
 | maxTaskLines | 数值 | 1-4 | 3 | 任务最大行数 |
+| portraitScale | 数值 | 0.35-1 | 0.8 | 头像缩放：1 为恰好填满右侧人物区，越小头像越小 |
 | roleAccents | 对象 | 可选 | 内置配色 | 岗位主色覆盖，如 {"manager":"#4f7cff"}（四岗：manager/platform/twin/hardware） |
 | inactiveColor | 颜色 | 可选 | #65748d | 非活跃岗位文字色 |
 

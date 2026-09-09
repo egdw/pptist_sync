@@ -71,9 +71,11 @@ function preparePortrait(image) {
   }
 
   const bounds = alphaBounds(data, width, height)
-  if (!bounds) return canvas
+  // 裁剪只用于去白底/去透明边，不用于放大：模板按 sourceWidth/Height（原图尺寸）
+  // 计算 contain 缩放，再乘主题 portraitScale，避免半身照人脸撑满整块屏幕。
+  if (!bounds) return { canvas, sourceWidth: width, sourceHeight: height }
 
-  // 自动裁掉透明/空白边缘，使人物在 LCD 上更大；保留少量呼吸空间。
+  // 自动裁掉透明/空白边缘（仅去边，不放大人物；缩放由模板按原图尺寸决定）
   const padX = Math.max(8, Math.round((bounds.right - bounds.left + 1) * .035))
   const padTop = Math.max(8, Math.round((bounds.bottom - bounds.top + 1) * .025))
   const padBottom = Math.max(4, Math.round((bounds.bottom - bounds.top + 1) * .012))
@@ -84,10 +86,10 @@ function preparePortrait(image) {
   const cropW = right - left + 1
   const cropH = bottom - top + 1
 
-  if (cropW >= width * .96 && cropH >= height * .96) return canvas
+  if (cropW >= width * .96 && cropH >= height * .96) return { canvas, sourceWidth: width, sourceHeight: height }
   const cropped = createCanvas(cropW, cropH)
   cropped.getContext('2d').drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH)
-  return cropped
+  return { canvas: cropped, sourceWidth: width, sourceHeight: height }
 }
 
 function edgeLooksWhite(data, width, height) {

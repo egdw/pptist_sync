@@ -12,6 +12,8 @@ export function drawDefaultTemplate(ctx, state, role, portrait, rawTheme = {}) {
     roleFontSize: bounded(rawTheme.roleFontSize, 68, 44, 82),
     stageFontSize: bounded(rawTheme.stageFontSize, 50, 34, 72),
     maxTaskLines: Math.round(bounded(rawTheme.maxTaskLines, 2, 1, 2)),
+    // 头像缩放系数：1 = 原图 contain 恰好填满舞台内区，默认 0.8 留出呼吸空间
+    portraitScale: bounded(rawTheme.portraitScale, 0.8, 0.35, 1),
     // 可选主题字段：非活跃文字色与岗位主色覆盖（lcd-theme.json 高级编辑）
     inactiveColor: colorHex(rawTheme.inactiveColor) || '#65748d',
   }
@@ -47,7 +49,7 @@ export function drawDefaultTemplate(ctx, state, role, portrait, rawTheme = {}) {
   ctx.fillStyle = active ? '#f6fbff' : '#9aa6b7'
   drawWrapped(ctx, state.roles?.[role]?.task || '—', 82, 558, 650, theme.maxTaskLines, theme.taskFontSize, theme.taskFontSize + 15)
 
-  drawPortraitStage(ctx, portrait, accent, active)
+  drawPortraitStage(ctx, portrait, accent, active, theme.portraitScale)
 
   // 底部只给出轻量状态条，远距离也容易辨认。
   ctx.fillStyle = active ? `${accent}28` : 'rgba(255,255,255,.035)'
@@ -105,7 +107,7 @@ function drawStatus(ctx, active, lead, accent) {
   ctx.fillText(label, x + 43, 84)
 }
 
-function drawPortraitStage(ctx, portrait, accent, active) {
+function drawPortraitStage(ctx, portrait, accent, active, portraitScale) {
   const x = 775, y = 122, w = 475, h = 652
 
   // 人物后面只有深色透明舞台，无白底、无厚相框。
@@ -125,11 +127,12 @@ function drawPortraitStage(ctx, portrait, accent, active) {
 
   if (!portrait) return
 
-  // renderer 已经裁掉透明/白色背景；这里采用 contain + 下对齐，保证头、肩、手臂不被裁断。
+  // renderer 已去白底并裁边；缩放按「原图 contain × portraitScale」计算，
+  // 裁剪不改变人物在屏上的视觉大小，只去掉白底与空白边缘。
   const innerX = x + 10, innerY = y + 18, innerW = w - 20, innerH = h - 16
-  const scale = Math.min(innerW / portrait.width, innerH / portrait.height)
-  const pw = portrait.width * scale
-  const ph = portrait.height * scale
+  const scale = Math.min(innerW / portrait.sourceWidth, innerH / portrait.sourceHeight) * portraitScale
+  const pw = portrait.canvas.width * scale
+  const ph = portrait.canvas.height * scale
   const px = innerX + (innerW - pw) / 2
   const py = innerY + innerH - ph
 
@@ -138,7 +141,7 @@ function drawPortraitStage(ctx, portrait, accent, active) {
   ctx.shadowBlur = active ? 32 : 18
   ctx.shadowOffsetY = 10
   ctx.globalAlpha = active ? 1 : .78
-  ctx.drawImage(portrait, px, py, pw, ph)
+  ctx.drawImage(portrait.canvas, px, py, pw, ph)
   ctx.restore()
 }
 
