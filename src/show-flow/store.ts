@@ -549,6 +549,20 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     save()
   }
 
+  /** 一键清空虚拟序列：全部步骤的页面引用回到未编排池，并停止放映会话 */
+  const clearAllSteps = () => {
+    for (const step of flow.value.steps) {
+      for (const role of ['main', 'secondary'] as const) {
+        const pageId = role === 'main' ? step.main?.pageId : step.secondary?.pageId
+        if (pageId && !poolOf(role).includes(pageId)) poolOf(role).push(pageId)
+      }
+    }
+    flow.value.steps = []
+    flow.value.currentStepId = undefined
+    controller?.stop()
+    save()
+  }
+
   const duplicateStep = (stepId: string) => {
     const idx = flow.value.steps.findIndex(s => s.id === stepId)
     if (idx === -1) return
@@ -637,6 +651,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     insertStepAt,
     removePageFromStep,
     removeStep,
+    clearAllSteps,
     duplicateStep,
     moveStep,
     renameStep,

@@ -127,7 +127,12 @@
 
       <!-- 中：虚拟播放序列 -->
       <section class="sequence">
-        <div class="seq-title">虚拟播放序列（{{ flow.steps.length }} 步）</div>
+        <div class="seq-title">
+          虚拟播放序列（{{ flow.steps.length }} 步）
+          <button class="seq-clear" :class="{ armed: clearArmed }" v-if="flow.steps.length" @click="clearAllSteps">
+            {{ clearArmed ? `确认清空 ${flow.steps.length} 步？` : '一键清空' }}
+          </button>
+        </div>
         <div class="seq-list" @dragover.prevent @drop="onDropGap(flow.steps.length, $event)">
           <template v-for="(step, i) in flow.steps" :key="step.id">
             <div class="gap" @dragover.prevent @drop.stop="onDropGap(i, $event)"></div>
@@ -284,6 +289,20 @@ const deleteSchemeClick = () => {
   }
   deleteArmed.value = false
   showFlowStore.deleteScheme()
+}
+
+/** 一键清空虚拟序列：两次点击确认（同上）；被清步骤引用的页面回到未编排池 */
+const clearArmed = ref(false)
+let clearArmTimer = 0
+const clearAllSteps = () => {
+  if (!clearArmed.value) {
+    clearArmed.value = true
+    if (clearArmTimer) clearTimeout(clearArmTimer)
+    clearArmTimer = window.setTimeout(() => (clearArmed.value = false), 3000)
+    return
+  }
+  clearArmed.value = false
+  showFlowStore.clearAllSteps()
 }
 
 // 副屏内容源类型：PPTist 文稿渲染真实缩略图，Reveal/Markdown 渲染 H1 文本卡
@@ -684,6 +703,27 @@ onMounted(() => {
     font-size: 13px;
     font-weight: 600;
     margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .seq-clear {
+    border: 1px solid #dcdfe6;
+    background: #fff;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 400;
+    padding: 3px 9px;
+    cursor: pointer;
+    color: #909399;
+
+    &:hover { border-color: #d25f5f; color: #d25f5f; }
+    &.armed {
+      border-color: #d25f5f;
+      background: #d25f5f;
+      color: #fff;
+    }
   }
   .seq-list {
     flex: 1;
