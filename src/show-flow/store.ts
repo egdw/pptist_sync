@@ -249,6 +249,9 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   }
 
   // ---------- Reconciliation ----------
+  // 对账提示只在编排页显示：编辑器/播放页等窗口也会静默执行对账（保护引用），
+  // 但弹出「页面 ID 已变化」提示会干扰正常使用（如在编辑器里编辑文稿时）
+  const isShowFlowRoute = () => window.location.pathname.startsWith('/showflow')
   const reconcile = (role: 'main' | 'secondary') => {
     const manifest = role === 'main' ? mainManifest.value : secondaryManifest.value
     // 冷启动时内容源尚未异步加载完成；空清单不等同于“用户删除了全部页面”。
@@ -265,10 +268,10 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     if (result.preservedMissing) {
       const text = `${sourceLabel}清单尚未完整加载或页面 ID 已变化；已保护 ${result.preservedMissing} 条引用，未删除任何步骤。`
       if (role === 'secondary') secondaryManifestError.value = text
-      message.warning(text, { duration: 4500 })
+      if (isShowFlowRoute()) message.warning(text, { duration: 4500 })
     }
     else if (role === 'secondary') secondaryManifestError.value = ''
-    if (result.report.messages.length || result.report.added || result.report.removedNodeRefs) {
+    if (isShowFlowRoute() && (result.report.messages.length || result.report.added || result.report.removedNodeRefs)) {
       message.info(`${sourceLabel}源同步完成：保留 ${result.report.kept} · 新增 ${result.report.added} · 移除引用 ${result.report.removedNodeRefs}`, { duration: 3000 })
     }
     // 打开编排页或播放页时的无变化对账不能写服务端，否则多个窗口仅加载页面
