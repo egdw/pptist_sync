@@ -70,6 +70,19 @@ export async function run({ pptxPath, base }: { pptxPath: string; base: string }
   }
   ok(bridgedImg + bridgedFill > 0, `blob 桥接到 base64 字段（元素 ${bridgedImg} + 背景 ${bridgedFill}）`)
 
+  // 嵌套桥接：group/diagram 子元素图片也必须被桥接（否则拍平后 src 为空被剔除，页面内容丢失）
+  let nestedImg = 0, nestedBridged = 0
+  for (const item of parsed.slides as any[]) {
+    for (const el of item.elements || []) {
+      if (Array.isArray(el.elements)) {
+        for (const child of el.elements) {
+          if (child.type === 'image' && child.blob) { nestedImg++; if (child.base64 === child.blob) nestedBridged++ }
+        }
+      }
+    }
+  }
+  ok(nestedBridged === nestedImg && nestedImg > 0, `group 子元素图片桥接（${nestedBridged}/${nestedImg}）`)
+
   // 模拟 useImport 转换后的媒体字段形状（src 承载引用）——上传器遍历的就是这个形状
   const rawSlides = parsed.slides.map((item: any) => ({
     id: `s-${Math.random().toString(36).slice(2, 10)}`,

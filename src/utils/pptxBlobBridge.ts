@@ -14,14 +14,20 @@ interface BlobCarrying {
 }
 
 export function bridgePptxBlobImages(parsed: { slides?: unknown[] }): void {
-  for (const item of (parsed.slides || []) as BlobCarrying[]) {
-    const fill = item.fill as { type?: string; value?: { base64?: string; blob?: string } } | undefined
-    if (fill?.type === 'image' && fill.value?.blob) fill.value.base64 = fill.value.blob
-    for (const el of item.elements || []) {
+  const bridgeElements = (elements: BlobCarrying[] | undefined) => {
+    for (const el of elements || []) {
       if (el.type === 'image') {
         const carrier = el as unknown as { base64?: string; blob?: string }
         if (carrier.blob) carrier.base64 = carrier.blob
       }
+      // group/diagram 的子元素同样携带 blob，需要递归桥接（否则子图 src 为空，
+      // 会被离屏渲染前的空 src 清理丢掉——表现为页面上照片/装饰图整块缺失）
+      if (Array.isArray(el.elements)) bridgeElements(el.elements)
     }
+  }
+  for (const item of (parsed.slides || []) as BlobCarrying[]) {
+    const fill = item.fill as { type?: string; value?: { base64?: string; blob?: string } } | undefined
+    if (fill?.type === 'image' && fill.value?.blob) fill.value.base64 = fill.value.blob
+    bridgeElements(item.elements)
   }
 }
