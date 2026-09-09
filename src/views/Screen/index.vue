@@ -3,7 +3,7 @@
     <AudienceView v-if="isAudienceMode" />
     <BaseView :changeViewMode="changeViewMode" v-else-if="viewMode === 'base'" />
     <PresenterView :changeViewMode="changeViewMode" v-else-if="viewMode === 'presenter'" />
-    <ShowFlowConsole v-if="!isAudienceMode && showFlowStore.flow.enabled" />
+    <ShowFlowRuntime v-if="!isAudienceMode && showFlowStore.flow.enabled" />
   </div>
 </template>
 
@@ -16,7 +16,7 @@ import { useShowFlowStore } from '@/show-flow/store'
 import AudienceView from './AudienceView.vue'
 import BaseView from './BaseView.vue'
 import PresenterView from './PresenterView.vue'
-import ShowFlowConsole from './ShowFlowConsole.vue'
+import ShowFlowRuntime from './ShowFlowRuntime.vue'
 
 const isAudienceMode = new URLSearchParams(window.location.search).get('mode') === 'audience'
 
