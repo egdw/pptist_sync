@@ -121,7 +121,12 @@
   /* ---- ACK：真正切换完成 + 至少一帧渲染后才回发 ---- */
   function ackRendered(commandId) {
     requestAnimationFrame(function () {
+      if (commandId !== state.pendingCommandId) return;
       send({ type: 'ACK', commandId: commandId, pageId: currentRenderedPageId(), rendered: true });
+      if (commandId) {
+        state.executed.push(commandId);
+        if (state.executed.length > 32) state.executed.shift();
+      }
       state.pendingCommandId = null;
       // 合成监控：联动会话中每次页面渲染完成后上传最新画面
       scheduleCapture();
@@ -169,13 +174,9 @@
     // 联动指令到达：本页作为正式副屏参与联动放映（合成监控开始上传）
     state.sessionActive = true;
     // 幂等：同一 commandId 只执行一次
-    if (msg.commandId && state.executed.indexOf(msg.commandId) !== -1) {
+    if (msg.commandId && state.executed.indexOf(msg.commandId) !== -1 && currentRenderedPageId() === msg.pageId) {
       send({ type: 'ACK', commandId: msg.commandId, pageId: currentRenderedPageId(), rendered: true });
       return;
-    }
-    if (msg.commandId) {
-      state.executed.push(msg.commandId);
-      if (state.executed.length > 32) state.executed.shift();
     }
     var pageId = msg.pageId || (msg.state && msg.state.secondaryPageId);
     if (!pageId) return;

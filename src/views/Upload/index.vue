@@ -17,8 +17,8 @@
           <div class="card-title">选择 PPTX 文件</div>
           <div class="target-row">
             <span class="target-label">上传目标：</span>
-            <button class="target-btn" :class="{ active: uploadTarget === 'main' }" @click="uploadTarget = 'main'">主屏文稿</button>
-            <button class="target-btn" :class="{ active: uploadTarget === 'secondary' }" @click="uploadTarget = 'secondary'">副屏文稿（PPTist B）</button>
+            <button class="target-btn" :disabled="parsing || uploading" :class="{ active: uploadTarget === 'main' }" @click="uploadTarget = 'main'">主屏文稿</button>
+            <button class="target-btn" :disabled="parsing || uploading" :class="{ active: uploadTarget === 'secondary' }" @click="uploadTarget = 'secondary'">副屏文稿（PPTist B）</button>
           </div>
           <div class="target-tip">
             {{ uploadTarget === 'secondary'
@@ -91,7 +91,7 @@
             <div class="meta-row"><span class="meta-label">更新时间</span><span class="meta-value">{{ formatTime(secondaryMeta.updatedAt) }}</span></div>
             <div class="meta-row"><span class="meta-label">版本</span><span class="meta-value">{{ secondaryMeta.version }}</span></div>
           </template>
-          <div class="empty-meta" v-else>暂无副屏文稿（与主屏完全独立）</div>
+          <div class="empty-meta" v-else>{{ secondaryMetaError || (secondaryMetaLoaded ? '暂无副屏文稿（与主屏完全独立）' : '正在读取已上传的副屏文稿…') }}</div>
           <a class="play-link" :href="secondaryUrl" target="_blank"><i-icon-park-outline:play class="btn-icon" /> 打开副屏页 /secondary</a>
         </div>
 
@@ -142,6 +142,8 @@ const { importPPTXFile, exporting } = useImport()
 const config = ref<DefaultPptConfig>({ publicBaseUrl: null, maxUploadMB: 1024, acceptTypes: ['.pptx', '.pdf'] })
 const currentMeta = ref<DefaultPptMeta>({ exists: false })
 const secondaryMeta = ref<DefaultPptMeta>({ exists: false })
+const secondaryMetaLoaded = ref(false)
+const secondaryMetaError = ref('')
 // 上传目标槽位：主屏文稿（默认 PPT）或副屏文稿（PPTist B），两槽位存储互相独立
 const uploadTarget = ref<'main' | 'secondary'>('main')
 const selectedFile = ref<File | null>(null)
@@ -169,6 +171,7 @@ let seedSlideId = ''
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
 let unsubscribe: (() => void) | null = null
+let unsubscribeSecondary: (() => void) | null = null
 
 const hostname = computed(() => window.location.hostname)
 const isLocalAddress = computed(() => ['localhost', '127.0.0.1', '[::1]'].includes(hostname.value))
@@ -302,6 +305,7 @@ const parsePdf = async (file: File, opts: { blobSrc?: boolean } = {}): Promise<D
 }
 
 const handleFile = async (file: File) => {
+  if (parsing.value || uploading.value) return
   const invalid = validateFile(file)
   if (invalid) {
     errorText.value = invalid
@@ -357,6 +361,9 @@ const handleFileChange = (e: Event) => {
   if (files && files[0]) handleFile(files[0])
   ;(e.target as HTMLInputElement).value = ''
 }
+watch(uploadTarget, () => {
+  if (selectedFile.value) void handleFile(selectedFile.value)
+})
 
 const handleDrop = (e: DragEvent) => {
   dragging.value = false
@@ -573,24 +580,24 @@ onMounted(async () => {
   }
   try {
     secondaryMeta.value = await fetchSecondaryDocCurrent()
+    secondaryMetaLoaded.value = true
   }
   catch {
-    /* 忽略，展示为暂无 */
+    secondaryMetaError.value = '副屏信息读取失败，文件状态尚未确认，请刷新重试'
   }
   unsubscribe = subscribeDefaultPptEvents({
     onVersion: meta => {
       if (meta.exists) currentMeta.value = meta
     },
   })
-  const unsubscribeSecondary = subscribeSecondaryDocEvents({
+  unsubscribeSecondary = subscribeSecondaryDocEvents({
     onVersion: meta => {
-      if (meta.exists) secondaryMeta.value = meta
+      if (meta.exists) { secondaryMeta.value = meta; secondaryMetaLoaded.value = true; secondaryMetaError.value = '' }
     },
   })
-  onUnmounted(() => unsubscribeSecondary())
 })
 
-onUnmounted(() => unsubscribe?.())
+onUnmounted(() => { unsubscribe?.(); unsubscribeSecondary?.() })
 </script>
 
 <style lang="scss" scoped>

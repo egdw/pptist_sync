@@ -23,6 +23,21 @@ export class ShowFlowWsClient {
   private reconnectDelay = 2000
   /** 下次 HELLO 携带 force 标记（「接管控制台」按钮） */
   private forceNextHello = false
+  private registered = false
+  private registrationWaiters = new Set<() => void>()
+
+  acquire(): Promise<void> {
+    if (this.registered && this.ws?.readyState === WebSocket.OPEN) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      const done = () => { clearTimeout(timer); this.registrationWaiters.delete(done); resolve() }
+      const timer = setTimeout(() => {
+        this.registrationWaiters.delete(done)
+        reject(new Error('控制台连接未就绪，请检查服务端连接后重试'))
+      }, 8000)
+      this.registrationWaiters.add(done)
+      this.takeover()
+    })
+  }
 
   /** 各远端角色最近心跳时间（ms 时间戳） */
   lastSeenByRole = new Map<ShowFlowRole, number>()
@@ -48,6 +63,7 @@ export class ShowFlowWsClient {
   }
 
   connect() {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
     this.closed = false
     try {
       this.ws = new WebSocket(this.url)
@@ -66,6 +82,11 @@ export class ShowFlowWsClient {
     this.ws.onmessage = event => {
       try {
         const msg = JSON.parse(event.data) as ShowFlowMessage
+        if (msg.type === 'HELLO_ACK') {
+          this.registered = true
+          for (const done of this.registrationWaiters) done()
+        }
+        if (msg.type === 'ERROR' && (msg.code === 'CONTROLLER_REPLACED' || msg.code === 'ROLE_TAKEN')) this.registered = false
         if (msg.type === 'PONG' && msg.role) this.lastSeenByRole.set(msg.role, Date.now())
         else if (msg.type === 'HELLO_ACK' && msg.role) this.lastSeenByRole.set(msg.role, Date.now())
         // 角色被占（另一控制台存活）：拉长退避，避免 2s 一次的重连风暴；服务端僵尸接管后仍会自动恢复
@@ -77,6 +98,7 @@ export class ShowFlowWsClient {
       catch { /* 忽略非 JSON 帧 */ }
     }
     this.ws.onclose = () => {
+      this.registered = false
       this.stopHeartbeat()
       this.handlers.onDisconnect()
       if (!this.closed) this.scheduleReconnect()

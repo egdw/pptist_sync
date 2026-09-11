@@ -17,7 +17,6 @@ import type {
 import {
   ACK_MAX_RETRIES,
   ACK_TIMEOUT_MS,
-  KEY_DEBOUNCE_MS,
   LOOSE_ACK_GIVEUP_MS,
 } from './websocket/protocol'
 import type { ShowFlowMessage } from './websocket/protocol'
@@ -50,7 +49,14 @@ export class ShowFlowController {
   currentStepIndex = -1
   snapshot: StepTargetSnapshot | null = null
   private pendingAcks = new Map<string, PendingAck>()
-  private lastActionAt = 0
+  private generation = 0
+
+  private cancelPending() {
+    this.generation++
+    for (const pending of this.pendingAcks.values()) {
+      ;(pending as PendingAck & { cleanup?: (r: boolean) => void }).cleanup?.(false)
+    }
+  }
   private looseAbnormal = false
   /** 各屏最近一次已实际导航到的 pageId（用于 keep 步骤的漂移补偿） */
   private appliedMainPageId: string | null = null
@@ -87,6 +93,7 @@ export class ShowFlowController {
   }
 
   private newSession() {
+    this.cancelPending()
     this.sessionId = `sess-${nanoid(8)}`
     this.seq = 0
     this.currentStepIndex = -1
@@ -139,13 +146,6 @@ export class ShowFlowController {
   /** 前进一个虚拟 Step。返回是否实际执行 */
   async next(): Promise<boolean> {
     if (!this.getConfig().enabled) return false
-    if (!this.ready) {
-      this.callbacks.onNotice('当前步骤尚未确认完成，已忽略本次操作', 'warning')
-      return false
-    }
-    const now = Date.now()
-    if (now - this.lastActionAt < KEY_DEBOUNCE_MS) return false
-    this.lastActionAt = now
 
     const nextIndex = this.currentStepIndex + 1
     if (nextIndex >= this.getConfig().stepCount) {
@@ -158,13 +158,6 @@ export class ShowFlowController {
   /** 后退一个虚拟 Step：整体快照恢复到上一 Step，而非各屏各自 previous */
   async previous(): Promise<boolean> {
     if (!this.getConfig().enabled) return false
-    if (!this.ready) {
-      this.callbacks.onNotice('当前步骤尚未确认完成，已忽略本次操作', 'warning')
-      return false
-    }
-    const now = Date.now()
-    if (now - this.lastActionAt < KEY_DEBOUNCE_MS) return false
-    this.lastActionAt = now
 
     if (this.currentStepIndex <= 0) {
       this.callbacks.onNotice('已经是第一个虚拟步骤了', 'info')
@@ -175,7 +168,6 @@ export class ShowFlowController {
 
   /** 跳转到指定 Step（断线恢复 / 控制台点击） */
   async gotoStep(stepIndex: number) {
-    if (!this.ready) return false
     return this.applyStep(stepIndex)
   }
 
@@ -185,6 +177,16 @@ export class ShowFlowController {
 
     const targetSnapshot = this.resolveSnapshot(stepIndex)
     if (!targetSnapshot) return false
+    if (!this.ready) {
+      // 在途命令可能已经改变真实画面，不能再依赖上一次 ACK 的位置判断 keep。
+      this.appliedMainPageId = null
+      this.appliedSecondaryPageId = null
+    }
+    this.cancelPending()
+    const generation = this.generation
+    // 接受输入即记录目标，后续前进/后退从此目标计算；旧 ACK 不能覆盖新操作。
+    this.currentStepIndex = stepIndex
+    this.snapshot = targetSnapshot
 
     // 事件触发时机（MQTT/平板，阶段 4 接入；当前仅回调通知）
     const timing = step.eventTiming || 'afterAck'
@@ -206,6 +208,7 @@ export class ShowFlowController {
 
     // 无任何屏幕导航的事件型 Step：立即完成
     if (!mainPageToApply && !secondaryPageToApply) {
+      this.setPhase('READY')
       this.currentStepIndex = stepIndex
       this.snapshot = targetSnapshot
       this.callbacks.onStepChange(targetSnapshot)
@@ -217,6 +220,15 @@ export class ShowFlowController {
     this.looseAbnormal = false
     const commandId = `cmd-${nanoid(8)}`
     let allAcked = true
+    const secondaryAck = secondaryPageToApply && secondary && needsConfirm
+      ? this.waitForAck(commandId, secondaryPageToApply, step.id, mode)
+      : null
+    // 同时下发两屏；副屏不再等待主屏 nextTick/RAF。
+    if (secondaryPageToApply && secondary) {
+      void secondary.gotoById(secondaryPageToApply, commandId).catch(err => {
+        if (generation === this.generation) this.callbacks.onNotice(`副屏切换失败：${err.message}`, 'error')
+      })
+    }
 
     // 主屏（本地）
     if (mainPageToApply && main) {
@@ -227,6 +239,7 @@ export class ShowFlowController {
         else {
           main.gotoById(mainPageToApply, commandId).catch(() => {})
         }
+        if (generation !== this.generation) return false
         this.appliedMainPageId = mainPageToApply
       }
       catch (err) {
@@ -237,9 +250,9 @@ export class ShowFlowController {
 
     // 副屏（远程）
     if (secondaryPageToApply && secondary) {
-      secondary.gotoById(secondaryPageToApply, commandId)
       if (needsConfirm) {
-        const acked = await this.waitForAck(commandId, secondaryPageToApply, step.id, mode)
+        const acked = await secondaryAck!
+        if (generation !== this.generation) return false
         if (!acked) {
           allAcked = false
           if (mode === 'strict') {
@@ -259,17 +272,21 @@ export class ShowFlowController {
       }
     }
 
+    if (generation !== this.generation) return false
     this.currentStepIndex = stepIndex
     this.snapshot = targetSnapshot
     this.callbacks.onStepChange(targetSnapshot)
     // LCD 与 resolved secondary snapshot 绑定。真实副屏导航时必须等 ACK（若关闭确认则在导航下发后）。
     if (secondaryPageToApply && (allAcked || !needsConfirm)) {
-      await this.callbacks.onLcdPage?.(targetSnapshot.secondaryPageId)
+      void Promise.resolve(this.callbacks.onLcdPage?.(targetSnapshot.secondaryPageId)).catch(error => {
+        this.callbacks.onNotice(`LCD 更新失败：${error.message}`, 'error')
+      })
     }
     if (timing !== 'beforeNavigate') this.callbacks.onEventAction?.(step.id, timing)
 
     // 只有全部 ACK 后才回到 READY；strict 失败时保持 TRANSITIONING，由手动兜底解锁
     if (allAcked) this.setPhase('READY')
+    else if (mode === 'loose') this.setPhase('READY')
     else this.callbacks.onPhaseChange(this.phase)
     return true
   }
@@ -328,7 +345,7 @@ export class ShowFlowController {
   handleWsMessage(msg: ShowFlowMessage) {
     if (msg.type === 'ACK' && msg.commandId) {
       const pending = this.pendingAcks.get(msg.commandId)
-      if (pending) {
+      if (pending && msg.rendered === true && msg.pageId === pending.pageId && (!msg.role || msg.role === 'secondary')) {
         // 幂等：重复 ACK 直接忽略（清理后查不到）；正常确认静默处理，不弹提示打扰放映
         ;(pending as PendingAck & { cleanup?: (r: boolean) => void }).cleanup?.(true)
       }
@@ -363,11 +380,7 @@ export class ShowFlowController {
 
   /** 手动兜底：强制完成当前步骤（strict 卡死时解锁） */
   forceComplete() {
-    for (const [, pending] of this.pendingAcks) {
-      if (pending.timer) clearTimeout(pending.timer)
-      if (pending.giveupTimer) clearTimeout(pending.giveupTimer)
-    }
-    this.pendingAcks.clear()
+    this.cancelPending()
     this.looseAbnormal = false
     this.setPhase('READY')
     this.callbacks.onNotice('已强制完成当前步骤', 'warning')

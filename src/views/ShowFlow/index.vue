@@ -338,11 +338,11 @@ const secondaryTitleById = computed(() => new Map(secondaryManifest.value.map(p 
 
 const mainTargetTitle = (step: ShowStep) =>
   step.main?.action === 'goto' && step.main.pageId
-    ? mainTitleById.value.get(step.main.pageId) || `（页面已删除 ${step.main.pageId}）`
+    ? mainTitleById.value.get(step.main.pageId) || `（清单暂未匹配 ${step.main.pageId}）`
     : '保持'
 const secondaryTargetTitle = (step: ShowStep) =>
   step.secondary?.action === 'goto' && step.secondary.pageId
-    ? secondaryTitleById.value.get(step.secondary.pageId) || `（页面已删除 ${step.secondary.pageId}）`
+    ? secondaryTitleById.value.get(step.secondary.pageId) || `（清单暂未匹配 ${step.secondary.pageId}）`
     : '保持'
 
 const stepKindLabel = (step: ShowStep) => {

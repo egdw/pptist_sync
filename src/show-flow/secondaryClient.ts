@@ -26,6 +26,9 @@ export class SecondaryShowFlowClient {
   private executed = new Set<string>()
   private order: string[] = []
   private controlled = false
+  private navigating = new Map<string, Promise<void>>()
+  private generation = 0
+  private renderedPageId: string | null = null
   sessionId: string | null = null
 
   constructor(private options: SecondaryShowFlowClientOptions) {}
@@ -38,6 +41,11 @@ export class SecondaryShowFlowClient {
 
   /** WS 断开时调用：交还本机控制权 */
   reset() {
+    this.generation++
+    this.renderedPageId = null
+    this.executed.clear()
+    this.order = []
+    this.navigating.clear()
     this.setControlled(false)
   }
 
@@ -64,23 +72,19 @@ export class SecondaryShowFlowClient {
   private async execNavigate(pageId: string | null, commandId?: string) {
     if (!pageId) return
     this.setControlled(true)
+    const existing = commandId ? this.navigating.get(commandId) : null
+    if (existing) { await existing; return }
+    const generation = ++this.generation
 
     // 幂等：已执行过的 commandId（ACK 丢失后的重发）不再切页，直接补 ACK
-    if (commandId && this.executed.has(commandId)) {
+    if (commandId && this.executed.has(commandId) && this.renderedPageId === pageId) {
       this.ack(commandId, pageId)
       return
     }
-    if (commandId) {
-      this.executed.add(commandId)
-      this.order.push(commandId)
-      if (this.order.length > MAX_EXECUTED_RECORDS) {
-        const oldest = this.order.shift()
-        if (oldest) this.executed.delete(oldest)
-      }
-    }
-
+    const navigation = Promise.resolve().then(() => this.options.navigate(pageId))
+    if (commandId) this.navigating.set(commandId, navigation.catch(() => {}))
     try {
-      await this.options.navigate(pageId)
+      await navigation
     }
     catch (err) {
       this.options.send({
@@ -96,6 +100,17 @@ export class SecondaryShowFlowClient {
         if (i !== -1) this.order.splice(i, 1)
       }
       return
+    }
+    finally { if (commandId) this.navigating.delete(commandId) }
+    if (generation !== this.generation) return
+    this.renderedPageId = pageId
+    if (commandId) {
+      this.executed.add(commandId)
+      this.order.push(commandId)
+      if (this.order.length > MAX_EXECUTED_RECORDS) {
+        const oldest = this.order.shift()
+        if (oldest) this.executed.delete(oldest)
+      }
     }
     if (commandId) this.ack(commandId, pageId)
   }

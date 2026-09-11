@@ -14,6 +14,7 @@
         :changeViewMode="changeViewMode"
         keepPlayingOnFullscreenEsc
       />
+      <ShowFlowRuntime v-if="showFlowStore.flow.enabled" />
     </template>
 
     <!-- 尚无默认 PPT：显示引导并持续等待，首次上传成功后自动进入放映 -->
@@ -137,11 +138,14 @@ import Modal from '@/components/Modal.vue'
 import PresentationLinkPanel from '@/views/Editor/PresentationLinkPanel.vue'
 import BaseView from '@/views/Screen/BaseView.vue'
 import PresenterView from '@/views/Screen/PresenterView.vue'
+import ShowFlowRuntime from '@/views/Screen/ShowFlowRuntime.vue'
+import { useShowFlowStore } from '@/show-flow/store'
 
 type Phase = 'loading' | 'empty' | 'playing' | 'stopped'
 
 const screenStore = useScreenStore()
 const slidesStore = useSlidesStore()
+const showFlowStore = useShowFlowStore()
 const { screening } = storeToRefs(screenStore)
 
 const phase = ref<Phase>('loading')
@@ -203,6 +207,11 @@ watch(screening, value => {
   if (value) phase.value = 'playing'
   else if (phase.value === 'playing') phase.value = 'stopped'
 })
+watch(() => [phase.value, loadedSeq.value], () => {
+  if (phase.value === 'playing') void showFlowStore.startShow()
+  else showFlowStore.stopShow()
+}, { flush: 'post' })
+onUnmounted(() => showFlowStore.stopShow())
 
 // —— 原生全屏：与编辑器 F5 放映一致 ——
 // 打开页面即尝试；因缺少用户操作被浏览器拒绝时，在首次有效交互（点击画面、翻页笔、键盘）

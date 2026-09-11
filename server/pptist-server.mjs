@@ -172,7 +172,7 @@ async function rangeContains(source, start, length, marker) {
  * 文稿存储槽位（主屏 / 副屏各一个实例，状态互相独立）。
  * 上传按提交顺序串行处理；各播放端已将文稿载入内存，历史版本清理不影响播放。
  */
-function createDocStore({ dataDir, label }) {
+function createDocStore({ dataDir, label, deduplicateRaw = false }) {
   const versionsDir = path.join(dataDir, 'versions')
   const tmpDir = path.join(dataDir, 'tmp')
   const currentFile = path.join(dataDir, 'current.json')
@@ -282,6 +282,23 @@ function createDocStore({ dataDir, label }) {
     }
     if (!await rangeContains(upload.envelopeFile, upload.bundleOffset, upload.bundleLen, '"slides":[')) throw new Error('解析结果格式不正确')
 
+    // 重传相同副屏文件时沿用已发布解析结果及页面 ID，避免随机新 ID 使整个编排失效。
+    let rawSha256
+    if (deduplicateRaw) {
+      const digest = crypto.createHash('sha256')
+      for await (const chunk of fs.createReadStream(upload.envelopeFile, { start: upload.fileOffset, end: upload.fileOffset + upload.fileLen - 1 })) digest.update(chunk)
+      rawSha256 = digest.digest('hex')
+      if (current && current.pageCount === pageCount) {
+        let previousHash = current.rawSha256
+        if (!previousHash) {
+          const previous = crypto.createHash('sha256')
+          for await (const chunk of fs.createReadStream(path.join(versionsDir, current.version, 'raw.file'))) previous.update(chunk)
+          previousHash = previous.digest('hex')
+        }
+        if (previousHash === rawSha256) return current
+      }
+    }
+
     const seq = (current?.seq || 0) + 1
     const version = `v${seq}`
     const meta = {
@@ -290,6 +307,7 @@ function createDocStore({ dataDir, label }) {
       filename,
       pageCount,
       updatedAt: new Date().toISOString(),
+      ...(rawSha256 ? { rawSha256 } : {}),
     }
 
     // 先写入独立版本目录，再原子切换 current.json；任一步失败不影响旧默认
@@ -377,7 +395,8 @@ function createDocStore({ dataDir, label }) {
       sendJson(res, 404, { error: '暂无默认 PPT' })
       return
     }
-    const versionDir = path.join(versionsDir, current.version)
+    const servedVersion = current.version
+    const versionDir = path.join(versionsDir, servedVersion)
     // v3 版本优先 bundle.json（轻结构，src 为资产 URL）；v2 回退 slides.json
     const hasBundle = await fsp.stat(path.join(versionDir, 'bundle.json')).then(() => true, () => false)
     const filePath = path.join(versionDir, hasBundle ? 'bundle.json' : 'slides.json')
@@ -388,7 +407,7 @@ function createDocStore({ dataDir, label }) {
       'Content-Type': 'application/json; charset=utf-8',
       'Content-Length': stat.size,
       'Cache-Control': 'no-store',
-      'X-PPTist-Version': current.version,
+      'X-PPTist-Version': servedVersion,
     })
     fs.createReadStream(filePath).pipe(res)
   }
@@ -440,7 +459,7 @@ function createDocStore({ dataDir, label }) {
 
 // 双槽位文稿存储：主屏（/default-ppt-api，行为不变）+ 副屏 PPTist B（/showflow-api/secondary-doc）
 const mainDocStore = createDocStore({ dataDir: DATA_DIR, label: '主屏文稿' })
-const secondaryDocStore = createDocStore({ dataDir: SECONDARY_DATA_DIR, label: '副屏文稿(PPTist B)' })
+const secondaryDocStore = createDocStore({ dataDir: SECONDARY_DATA_DIR, label: '副屏文稿(PPTist B)', deduplicateRaw: true })
 // 主屏 v3 资源化扩展（资产池 + 会话上传 + 版本化 bundle）；副屏不受影响
 const defaultPptV3 = createDefaultPptV3({ store: mainDocStore, dataDir: DATA_DIR, maxUploadBytes: MAX_UPLOAD_MB * 1024 * 1024, log })
 

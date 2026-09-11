@@ -129,10 +129,17 @@ const navigate = async (pageId: string) => {
   slidesStore.updateSlideIndex(index)
   await nextTick()
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+  if (slidesStore.slides[slidesStore.slideIndex]?.id !== pageId) return
   // 双 PPT 合成监控：副屏页变化(含首次)自动截图上传，与主屏合成 1280×800
   const el = document.querySelector('.screen-slide-list .slide-item.current .slide-content')
-  if (el) void captureAndUploadHalf('secondary', el, index + 1, slidesStore.slides.length)
+  if (el) {
+    clearTimeout(captureTimer)
+    captureTimer = window.setTimeout(() => {
+      if (slidesStore.slides[slidesStore.slideIndex]?.id === pageId) void captureAndUploadHalf('secondary', el, index + 1, slidesStore.slides.length)
+    }, 250)
+  }
 }
+let captureTimer = 0
 
 let client: SecondaryShowFlowClient | null = null
 let ws: WebSocket | null = null
@@ -211,6 +218,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  clearTimeout(captureTimer)
   syncStopped = true
   unsubscribe?.()
   if (reconnectTimer) clearTimeout(reconnectTimer)

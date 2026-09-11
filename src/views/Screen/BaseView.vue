@@ -12,7 +12,7 @@
           :manualExitFullscreen="manualExitFullscreen"
           @wheel="($event: WheelEvent) => mousewheelListener($event)"
           @touchstart="($event: TouchEvent) => touchStartListener($event)"
-          @touchend="($event: TouchEvent) => touchEndListener($event)"
+          @touchend="handleSlideTouchEnd"
           v-contextmenu="contextmenus"
         />
       </div>
@@ -90,7 +90,9 @@ const props = defineProps<{
 const { slides, slideIndex } = storeToRefs(useSlidesStore())
 
 // 点击幻灯片区域翻到下一页；点击带链接的元素时保持原有跳转行为，不再翻页
+let suppressClickUntil = 0
 const handleSlideAreaClick = (e: MouseEvent) => {
+  if (Date.now() < suppressClickUntil) { suppressClickUntil = 0; return }
   if (!props.clickToAdvance) return
   const target = e.target as Element | null
   if (target?.closest?.('.link')) return
@@ -118,6 +120,10 @@ const {
   laserPen,
   broadcastExit,
 } = useExecPlay()
+
+const handleSlideTouchEnd = (event: TouchEvent) => {
+  if (touchEndListener(event)) suppressClickUntil = Date.now() + 500
+}
 
 const { slideWidth, slideHeight } = useSlideSize()
 const { exitScreening: _exitScreening } = useScreening()

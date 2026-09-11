@@ -20,6 +20,7 @@ import { buildPptistManifest } from './manifest'
 import { reconcileStepsPreservingMissing } from './reconciliation'
 import { loadShowFlowState, loadShowFlowStateFromServer, migrateShowFlowState, saveShowFlowState, saveShowFlowStateToServer, stripShowFlowRuntimeState } from './persistence'
 import { ShowFlowWsClient, resolveShowFlowWsUrl } from './websocket/client'
+import { subscribeSecondaryDocEvents } from '@/services/defaultPpt'
 import type {
   ContentSource,
   OnlineStatus,
@@ -216,30 +217,39 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     }
   }
 
+  let secondaryLoadSerial = 0
+  let secondaryLoadSucceeded = false
   const refreshSecondaryManifest = async () => {
+    const request = ++secondaryLoadSerial
+    secondaryLoadSucceeded = false
     const src = secondarySource.value
     if (!src || src.kind === 'pptist' /* 主屏本机文档不能作为副屏 */) {
       secondaryManifest.value = []
       secondarySlides.value = []
       secondaryManifestError.value = ''
+      secondaryLoadSucceeded = true
       return
     }
     try {
       buildSecondaryAdapter()
-      if (!secondaryAdapter) {
+      const adapter = secondaryAdapter
+      if (!adapter) {
         secondaryManifest.value = []
         secondarySlides.value = []
         secondaryManifestError.value = src.kind === 'reveal-md' ? '未配置 Markdown 路径' : '副屏来源不可用'
         return
       }
-      secondaryManifest.value = await secondaryAdapter.getManifest()
-      secondaryIsHtml.value = secondaryAdapter instanceof RevealMarkdownScreenAdapter && secondaryAdapter.contentKind === 'html'
-      secondarySlides.value = secondaryAdapter instanceof PptistRemoteScreenAdapter ? secondaryAdapter.getSlides() : []
+      const manifest = await adapter.getManifest()
+      if (request !== secondaryLoadSerial) return
+      if (!manifest.length) throw new Error('副屏清单为空，请检查所选内容源是否已上传并发布；已保留上次清单')
+      secondaryManifest.value = manifest
+      secondaryIsHtml.value = adapter instanceof RevealMarkdownScreenAdapter && adapter.contentKind === 'html'
+      secondarySlides.value = adapter instanceof PptistRemoteScreenAdapter ? adapter.getSlides() : []
       secondaryManifestError.value = ''
+      secondaryLoadSucceeded = true
     }
     catch (err) {
-      secondaryManifest.value = []
-      secondarySlides.value = []
+      if (request !== secondaryLoadSerial) return
       secondaryManifestError.value = (err as Error).message
     }
   }
@@ -253,6 +263,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   // 但弹出「页面 ID 已变化」提示会干扰正常使用（如在编辑器里编辑文稿时）
   const isShowFlowRoute = () => window.location.pathname.startsWith('/showflow')
   const reconcile = (role: 'main' | 'secondary') => {
+    if (role === 'secondary' && !secondaryLoadSucceeded) return
     const manifest = role === 'main' ? mainManifest.value : secondaryManifest.value
     // 冷启动时内容源尚未异步加载完成；空清单不等同于“用户删除了全部页面”。
     if (!manifest.length) return
@@ -342,6 +353,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
 
   // ---------- 联动开关 ----------
   const initialized = { value: false }
+  let bootstrapTask: Promise<void> | null = null
 
   /** 多屏联动总开关：关闭时立即停止 Controller，放映恢复普通模式 */
   const setEnabled = (v: boolean) => {
@@ -356,7 +368,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     watch(flowList, scheduleAutoSave, { deep: true })
     watch(sources, scheduleAutoSave, { deep: true })
     window.addEventListener('beforeunload', save)
-    void bootstrap()
+    bootstrapTask = bootstrap()
   }
 
   const bootstrap = async () => {
@@ -388,6 +400,16 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     reconcile('main')
     reconcile('secondary')
 
+    let secondaryVersion = ''
+    const unsubscribeSecondary = subscribeSecondaryDocEvents({ onVersion: meta => {
+      if (!meta?.exists || meta.version === secondaryVersion) return
+      secondaryVersion = meta.version || ''
+      if (secondarySource.value?.kind === 'pptist-remote') {
+        void refreshSecondaryManifest().then(() => reconcile('secondary'))
+      }
+    } })
+    window.addEventListener('beforeunload', unsubscribeSecondary, { once: true })
+
     controller = createController()
     let roleTakenNotified = false
     wsClient = new ShowFlowWsClient(resolveShowFlowWsUrl(), {
@@ -395,6 +417,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
         if (msg.type === 'HELLO_ACK') {
           wsConnected.value = true
           roleTaken.value = false
+          controller?.resyncAll()
         }
         if (msg.type === 'ERROR' && msg.code === 'ROLE_TAKEN') {
           // 本页被拒绝为 controller：另一窗口的控制台仍在线。
@@ -430,7 +453,15 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   // ---------- 放映接管入口 ----------
   const controllerReady = computed(() => flow.value.enabled)
 
+  let showRequest = 0
   const startShow = async () => {
+    const request = ++showRequest
+    init()
+    await bootstrapTask
+    if (request !== showRequest || !flow.value.enabled) return
+    try { await wsClient?.acquire() }
+    catch (error) { message.error((error as Error).message); return }
+    if (request !== showRequest) return
     if (secondaryIsHtml.value && flow.value.steps.some(step => step.secondary?.action === 'goto' && !secondaryManifest.value.some(p => p.id === step.secondary?.pageId))) {
       message.error('有旧副屏页面尚未绑定到 HTML，请先在编排页核对；不会按页号自动替换。')
       return
@@ -439,7 +470,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     if (flow.value.steps.length) await controller.start(0)
   }
 
-  const stopShow = () => controller?.stop()
+  const stopShow = () => { showRequest++; controller?.stop() }
 
   const next = () => controller?.next()
   const previous = () => controller?.previous()

@@ -13,6 +13,7 @@
   let ws=null, sessionId=null, sessionEpoch=0, socketSerial=0, stopped=false, joined=false;
   let retryDelay=2000,retryTimer,heartbeat,updateTimer,captureTimer, serial=Promise.resolve();
   let lastError=null,lastAck=null,lastCommand=null,capturePending=null,lastCapture=null;
+  let navigationSerial=0;
   const random=()=>{const a=new Uint32Array(4);crypto.getRandomValues(a);return [...a].map(x=>x.toString(16).padStart(8,'0')).join('');};
   const frames=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
   function fail(message){lastError=String(message);$('status-title').textContent='流程网页加载失败';$('status-text').textContent=lastError;$('status').hidden=false;$('status').classList.add('failed');}
@@ -54,7 +55,9 @@
   function navigate(pageId,epoch=sessionEpoch){
     if(!Object.hasOwn(bindings,pageId))return Promise.reject(new Error('PAGE_NOT_FOUND: '+pageId));
     const binding=bindings[pageId];
+    const navigation=++navigationSerial;
     const operation=serial.catch(()=>{}).then(async()=>{
+      if(navigation!==navigationSerial)throw new Error('旧切换已被新操作取代');
       if(epoch!==sessionEpoch)throw new Error('旧会话指令已失效');
       const client=clients.get(binding.kind);if(!client)throw new Error('显示资源未就绪');await client.promise;
       // A visible renderer is essential: hidden-tab timers/RAF must never produce fake ACKs.
@@ -63,6 +66,7 @@
       if(epoch!==sessionEpoch)throw new Error('旧会话指令已失效');
       if(state.pageId!==binding.targetId||state.overlay)throw new Error('副屏尚未显示目标画面');
       await frames();
+      if(navigation!==navigationSerial)throw new Error('旧切换已被新操作取代');
       rendered={pageId,displayPageId:state.pageId,displayIndex:state.pageIndex,displayCount:state.pageCount,kind:client.kind,overlay:false};
       lastError=null;updateControls();return rendered;
     });serial=operation;return operation;

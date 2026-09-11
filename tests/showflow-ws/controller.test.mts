@@ -13,6 +13,7 @@
  * 测试须并发发送 ACK，不能直接 await。
  */
 import { ShowFlowController } from '../../src/show-flow/controller.ts'
+import { LcdController } from '../../src/show-flow/lcd/lcd-controller.ts'
 
 let pass = 0, fail = 0
 const ok = (cond, name) => { if (cond) { pass++; console.log('✓', name) } else { fail++; console.log('✗ FAIL:', name) } }
@@ -65,7 +66,6 @@ const main = async () => {
   await wait(50)
   const navF1 = h.sentMessages.filter(m => m.type === 'NAVIGATE' && m.pageId === 'f1')
   ok(navF1.length === 1, '场景8: f1 只收到一次 NAVIGATE')
-  ok((await h.controller.next()) === false, '场景8: TRANSITIONING 中第二次 → 被忽略')
   h.ackLast('f1')
   ok((await p1) === true, '场景8: 第一次 → 在 ACK 后正常完成')
   ok(h.controller.ready, 'ACK 后回到 READY')
@@ -128,7 +128,6 @@ const main = async () => {
   ok(f1Msgs.length >= 2, '场景10: 1.5s 未 ACK 自动重发')
   ok(new Set(f1Msgs.map(m => m.commandId)).size === 1, '场景9: 重发沿用同一 commandId（客户端可幂等）')
   ok(h2.getPhase() === 'TRANSITIONING', '场景10: strict 模式未确认不放行（仍 TRANSITIONING）')
-  ok((await h2.controller.next()) === false, '场景10: 未确认期间 next 被拒绝')
   h2.controller.forceComplete()
   ok(h2.controller.ready, '兜底: 强制完成解锁 READY')
 
@@ -143,6 +142,56 @@ const main = async () => {
   ok(retryCount === 4, `场景9/10: 初次 + 3 次重试共 4 次同一 commandId（实际 ${retryCount}）`)
   h3.controller.skipSecondary()
   ok(h3.controller.ready, '兜底: 跳过副屏解锁')
+
+  const rapid = buildHarness()
+  await rapid.controller.start(0)
+  const old = rapid.controller.next()
+  const latest = rapid.controller.next()
+  await wait(0)
+  rapid.ackLast('f1')
+  ok(rapid.controller.snapshot?.secondaryPageId === 'f2', '连续输入立即推进到最新目标，旧 ACK 不回退页面')
+  rapid.ackLast('f2')
+  ok(await latest, '最新目标完成确认')
+  ok(await old === false, '过时的等待已取消')
+  const back = rapid.controller.previous()
+  await wait(0)
+  rapid.ackLast('f1')
+  await back
+  ok(rapid.controller.snapshot?.mainPageId === 'a1', '快速后退立即恢复主屏快照，不受 200ms 丢弃影响')
+
+  let finishLcd
+  const lcdWait = new Promise<void>(resolve => { finishLcd = resolve })
+  const lcdController = new ShowFlowController(
+    () => ({ main: { gotoById: async () => {} } as any, secondary: { gotoById: async () => {} } as any }),
+    { sendToRole: () => {} },
+    { onPhaseChange: () => {}, onStepChange: () => {}, onNotice: () => {}, onLcdPage: () => lcdWait },
+    () => ({ enabled: true, confirmationEnabled: false, confirmationMode: 'strict', stepCount: steps.length }),
+  )
+  lcdController.registerStepsAccessor(i => steps[i] as any)
+  await lcdController.start(1)
+  ok(lcdController.ready, 'LCD 尚未返回也不会锁住主副屏切换')
+  finishLcd()
+
+  const originalFetch = globalThis.fetch
+  const renderedPages: string[] = []
+  let releaseRender
+  globalThis.fetch = async (_url, options) => {
+    const pageId = JSON.parse(String(options?.body)).state.source.pageId
+    renderedPages.push(pageId)
+    if (pageId === 'one') await new Promise<void>(resolve => { releaseRender = resolve })
+    return { ok: true, json: async () => ({ revision: renderedPages.length, screens: [] }) } as Response
+  }
+  try {
+    const lcd = new LcdController({ getPage: id => ({ id, lcd: { source: { pageId: id } } } as any), publish: () => true })
+    const first = lcd.applyPage('one')
+    await wait(0)
+    const middle = lcd.applyPage('two')
+    const last = lcd.applyPage('three')
+    releaseRender()
+    await Promise.all([first, middle, last])
+    ok(renderedPages.join(',') === 'one,three', 'LCD 合并等待中的旧状态，只渲染最新目标')
+  }
+  finally { globalThis.fetch = originalFetch }
 
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
   process.exit(fail ? 1 : 0)

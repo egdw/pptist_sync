@@ -276,13 +276,19 @@ export default () => {
 
       if (offsetY > 0) execPrev()
       else execNext()
+      return true
     }
   }
 
   // 快捷键翻页（过滤按住不放的重复事件，避免连续触发多次）
-  const keydownListener = throttle(function(e: KeyboardEvent) {
+  const keydownListener = function(e: KeyboardEvent) {
     if (e.repeat) return
+    const target = e.target as HTMLElement | null
+    if (target?.isContentEditable || target?.closest('input, textarea, select')) return
     const key = e.key.toUpperCase()
+    const navigationKeys: string[] = [KEYS.UP, KEYS.LEFT, KEYS.PAGEUP, KEYS.DOWN, KEYS.RIGHT, KEYS.SPACE, KEYS.ENTER, KEYS.PAGEDOWN]
+    if (!navigationKeys.includes(key)) return
+    e.preventDefault()
 
     if (key === KEYS.UP || key === KEYS.LEFT || key === KEYS.PAGEUP) execPrev()
     else if (
@@ -292,7 +298,7 @@ export default () => {
       key === KEYS.ENTER ||
       key === KEYS.PAGEDOWN
     ) execNext()
-  }, 500, { leading: true, trailing: false })
+  }
 
   onMounted(() => {
     if (!isAudienceMode) document.addEventListener('keydown', keydownListener)

@@ -1,7 +1,7 @@
 <template>
   <div class="pptist-screen">
     <AudienceView v-if="isAudienceMode" />
-    <BaseView :changeViewMode="changeViewMode" v-else-if="viewMode === 'base'" />
+    <BaseView :changeViewMode="changeViewMode" clickToAdvance v-else-if="viewMode === 'base'" />
     <PresenterView :changeViewMode="changeViewMode" v-else-if="viewMode === 'presenter'" />
     <ShowFlowRuntime v-if="!isAudienceMode && showFlowStore.flow.enabled" />
   </div>
@@ -50,6 +50,7 @@ onMounted(() => {
   if (!isAudienceMode && showFlowStore.flow.enabled) showFlowStore.startShow()
 })
 onUnmounted(() => {
+  if (!isAudienceMode) showFlowStore.stopShow()
   if (!isAudienceMode) document.removeEventListener('keydown', keydownListener)
   syncChannel?.close()
 })

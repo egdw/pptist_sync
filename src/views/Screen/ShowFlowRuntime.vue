@@ -26,15 +26,12 @@ const scheduleMonitorUpload = () => {
 }
 onMounted(() => {
   // 首帧渲染完成后上传一次（联动放映「初次打开」）
-  window.setTimeout(scheduleMonitorUpload, 1500)
+  scheduleMonitorUpload()
 })
 onUnmounted(() => {
   if (monitorTimer) clearTimeout(monitorTimer)
 })
-watch(() => showFlowStore.snapshot, () => {
-  // 每个虚拟步骤应用后上传最新主屏画面
-  window.setTimeout(scheduleMonitorUpload, 700)
-})
+watch(() => useSlidesStore().slideIndex, scheduleMonitorUpload)
 
 // 联动模式下隐藏主屏左下角手动‹›按钮（翻页由虚拟步骤接管）
 watch(() => showFlowStore.flow.enabled, enabled => {

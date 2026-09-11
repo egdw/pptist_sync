@@ -49,6 +49,7 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   if (!response.ok) {
     throw new Error((data && (data as { error?: string }).error) || `请求失败（${response.status}）`)
   }
+  if (data === null) throw new Error('服务端未返回有效数据，请检查服务版本或连接后重试')
   return data as T
 }
 

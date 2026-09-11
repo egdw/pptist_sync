@@ -109,6 +109,11 @@ const main = async () => {
   ok(parsedSecondary.slides.length === 17 && parsedSecondary.slides[0].id === 'b1', '副屏 slides 内容正确（b1..b17）')
   ok(secondarySlides.headers['x-pptist-version'] === 'v1', '副屏响应带版本头')
 
+  const reparsed = { ...deckB, slides: deckB.slides.map((_, i) => ({ id: `random-new-${i}` })) }
+  await request('POST', '/showflow-api/secondary-doc/upload', buildEnvelope('deck-b.pptx', reparsed, 'secondary-raw'))
+  const duplicate = await request('GET', '/showflow-api/secondary-doc/current/slides')
+  ok(duplicate.json.slides[0].id === 'b1' && duplicate.headers['x-pptist-version'] === 'v1', '同一副屏文件重传保持原页面 ID 和版本，不破坏编排')
+
   // —— 副屏版本更新（模拟换稿）：主屏继续不受影响 ——
   const deckB2 = { title: '副屏文稿B-v2', slides: Array.from({ length: 5 }, (_, i) => ({ id: `c${i + 1}` })), theme: {} }
   await request('POST', '/showflow-api/secondary-doc/upload', buildEnvelope('deck-b2.pptx', deckB2, 'secondary-raw-2'))

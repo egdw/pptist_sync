@@ -25,21 +25,25 @@ export function publishLcdRenderResult(result: LedRenderResult, publish: (topic:
 export class LcdController {
   private lastPageId: string | null = null
   private queue = Promise.resolve()
+  private request = 0
   constructor(private options: LcdControllerOptions) {}
 
   applyPage(pageId: string | null, force = false): Promise<void> {
-    this.queue = this.queue.then(() => this.apply(pageId, force)).catch(error => {
+    if (!pageId || !this.options.getPage(pageId)?.lcd) return this.queue
+    const request = ++this.request
+    this.queue = this.queue.then(() => request === this.request ? this.apply(pageId, force, request) : undefined).catch(error => {
       console.error('[ShowFlow LCD] LCD 配置应用失败', error)
       this.options.onNotice?.(`LCD 配置应用失败：${error instanceof Error ? error.message : error}`, 'error')
     })
     return this.queue
   }
 
-  private async apply(pageId: string | null, force: boolean) {
+  private async apply(pageId: string | null, force: boolean, request: number) {
     if (!pageId || (!force && pageId === this.lastPageId)) return
     const page = this.options.getPage(pageId)
     if (!page?.lcd) return // 没有 LCD 块：严格保持上一状态，不发布
     const result = await renderLcdState(page.lcd)
+    if (request !== this.request) return
     this.publish(result, page.lcd)
     this.lastPageId = pageId
     this.options.onNotice?.(`LCD 已更新（revision ${result.revision}）`, 'success')

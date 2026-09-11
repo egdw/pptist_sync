@@ -92,6 +92,16 @@ const main = async () => {
   h.client.reset()
   ok(h.controlledLog().at(-1) === false, 'reset() 后交还本机控制权（WS 断线兜底）')
 
+  let release
+  const delayed = buildHarness(() => new Promise<void>(resolve => { release = resolve }))
+  delayed.client.handleMessage({ type: 'NAVIGATE', commandId: 'slow', pageId: 'slow-page' })
+  await wait(0)
+  delayed.client.handleMessage({ type: 'NAVIGATE', commandId: 'slow', pageId: 'slow-page' })
+  ok(delayed.sent.length === 0 && delayed.navCalls.length === 1, '渲染中重试不提前 ACK，也不重复执行')
+  release()
+  await wait(0)
+  ok(delayed.sent.some(m => m.type === 'ACK'), '真实渲染完成后才确认')
+
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
   process.exit(fail ? 1 : 0)
 }

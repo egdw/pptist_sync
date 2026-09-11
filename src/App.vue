@@ -70,7 +70,7 @@ onUnmounted(() => destroyPresentationBridge())
 // /secondary 副屏页例外 —— 它是受控端，只运行 SecondaryShowFlowClient，不能注册 controller 角色
 const showFlowStore = useShowFlowStore()
 onMounted(() => {
-  if (!isAudienceMode && !isSecondaryRoute && !isLedPreviewRoute && !isStudioRoute) showFlowStore.init()
+  if (!isAudienceMode && !isSecondaryRoute && !isLedPreviewRoute && !isStudioRoute && !isUploadRoute) showFlowStore.init()
 })
 
 onMounted(async () => {
