@@ -40,7 +40,7 @@ import {
 import { SecondaryShowFlowClient } from '@/show-flow/secondaryClient'
 import { resolveShowFlowWsUrl } from '@/show-flow/websocket/client'
 import { useShowFlowStore } from '@/show-flow/store'
-import { captureAndUploadHalf } from '@/show-flow/monitor'
+import { captureAndUploadHalf, isBakedImagePage } from '@/show-flow/monitor'
 import type { ShowFlowMessage } from '@/show-flow/websocket/protocol'
 
 import BaseView from '@/views/Screen/BaseView.vue'
@@ -135,8 +135,12 @@ const navigate = async (pageId: string) => {
   if (el) {
     clearTimeout(captureTimer)
     captureTimer = window.setTimeout(() => {
-      if (slidesStore.slides[slidesStore.slideIndex]?.id === pageId) void captureAndUploadHalf('secondary', el, index + 1, slidesStore.slides.length)
-    }, 250)
+      if (slidesStore.slides[slidesStore.slideIndex]?.id !== pageId) return
+      // v3 整页底图已烘焙 GIF 首帧：截图跳过 GIF 动图，避免把超大动图 base64 进 SVG
+      void captureAndUploadHalf('secondary', el, index + 1, slidesStore.slides.length, {
+        skipGifOverlays: isBakedImagePage(slidesStore.slides[slidesStore.slideIndex]),
+      })
+    }, 180)
   }
 }
 let captureTimer = 0

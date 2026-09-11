@@ -8,7 +8,7 @@
 import { onMounted, onUnmounted, watch } from 'vue'
 import { useShowFlowStore } from '@/show-flow/store'
 import { useSlidesStore } from '@/store'
-import { captureAndUploadHalf } from '@/show-flow/monitor'
+import { captureAndUploadHalf, isBakedImagePage } from '@/show-flow/monitor'
 
 const showFlowStore = useShowFlowStore()
 
@@ -21,8 +21,12 @@ const scheduleMonitorUpload = () => {
     const el = screenEl()
     if (!el) return
     const slidesStore = useSlidesStore()
-    await captureAndUploadHalf('main', el, slidesStore.slideIndex + 1, slidesStore.slides.length)
-  }, 350)
+    const slide = slidesStore.slides[slidesStore.slideIndex]
+    // v3 整页底图已烘焙 GIF 首帧：截图跳过 GIF 动图，避免把超大动图 base64 进 SVG
+    await captureAndUploadHalf('main', el, slidesStore.slideIndex + 1, slidesStore.slides.length, {
+      skipGifOverlays: isBakedImagePage(slide),
+    })
+  }, 200)
 }
 onMounted(() => {
   // 首帧渲染完成后上传一次（联动放映「初次打开」）

@@ -56,7 +56,13 @@ export function createMonitorMqttPublisher({ topic, log = () => {} }) {
     const message = pending
     pending = null
     client.publish(topic, JSON.stringify(message), { qos: 1, retain: true }, error => {
-      if (error) { lastError = error.message; pending = message; return }
+      if (error) {
+        lastError = error.message
+        // 发布失败：放回待发并主动重试，不等待下一次页面事件（否则监控画面可能停留旧图）
+        pending = message
+        schedule(500)
+        return
+      }
       lastPublishedRevision = message.revision
       lastError = null
       if (pending) schedule(30)
