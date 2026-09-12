@@ -161,9 +161,10 @@ html.showflow-active .tools-left {
   display: none !important;
 }
 
-/* 空闲驻留：长时间无操作/无导航时停播 GIF 覆盖层。
-   仅命中 v3 页面（data-gif-baked，底图已烘焙 GIF 首帧），视觉无损；
-   任意键鼠操作或新导航立即恢复动图。防止大 GIF 长驻解码拖垮放映机。 */
-html.gif-parked .slide-content[data-gif-baked] img[src$='.gif'] {
+/* 空闲驻留：长时间无操作/无导航时停播 GIF 覆盖层与视频。
+   仅命中 v3 页面（data-gif-baked，底图已烘焙 GIF 首帧/视频 poster），视觉无损；
+   任意键鼠操作或新导航立即恢复。防止大 GIF 长驻解码拖垮放映机。 */
+html.gif-parked .slide-content[data-gif-baked] img[src$='.gif'],
+html.gif-parked .slide-content[data-gif-baked] video {
   display: none !important;
 }

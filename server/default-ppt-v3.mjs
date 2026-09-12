@@ -85,7 +85,7 @@ function streamBodyToFile(req, filePath, maxBytes) {
 
 const settle = (tmp, dest) => fsp.rename(tmp, dest)
 
-export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log }) {
+export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTranscoder }) {
   const assetsDir = path.join(dataDir, 'assets')
   const sessionsDir = path.join(dataDir, 'tmp', 'sessions')
 
@@ -258,6 +258,8 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log }) {
         await fsp.rm(sessionDir, { recursive: true, force: true }).catch(() => {})
         log(`v3 上传成功：${meta.version} ${filename}（${pageCount} 页，资产 ${referenced.size} 个）`)
         sendJson(res, 200, { ok: true, ...store.publicMeta() })
+        // 发布成功后异步升级超大 GIF 覆盖层为视频（不阻塞响应；完成后以新 seq 热替换）
+        if (gifTranscoder) scheduleGifUpgrade(meta.version)
         return true
       }
 
@@ -270,6 +272,23 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log }) {
       else res.end()
       return true
     }
+  }
+
+  /** GIF→视频升级：串行；转码+改写 bundle 后用新 seq 重新发布，播放端热替换 */
+  function scheduleGifUpgrade(version) {
+    void gifTranscoder.enqueue(async () => {
+      try {
+        const bundlePath = path.join(store.versionsDir, version, 'bundle.json')
+        const bundle = JSON.parse(await fsp.readFile(bundlePath, 'utf8'))
+        const changed = await gifTranscoder.upgradeBundleOverlays(bundle)
+        if (!changed) return
+        await store.republishWithBundle(JSON.stringify(bundle))
+        log(`[gif-transcode] ${version} 超大 GIF 已升级为视频并重新发布`)
+      }
+      catch (error) {
+        log('[gif-transcode] 升级失败，GIF 保持原状：', error.message)
+      }
+    })
   }
 
   return { init, handle }

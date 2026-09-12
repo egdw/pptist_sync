@@ -36,6 +36,10 @@ let captureSeq = 0
 const isGifImg = (node: HTMLElement) =>
   node instanceof HTMLImageElement && /\.gif(\?|$)/i.test(node.currentSrc || node.getAttribute('src') || '')
 
+/** 监控截图跳过的重资源节点：GIF 图片（v3 底图已烘焙首帧）与视频元素
+ *  （html-to-image 无法渲染 <video> 画面，跳过后显示底图烘焙帧） */
+const isSkippedOverlay = (node: HTMLElement) => isGifImg(node) || node instanceof HTMLVideoElement
+
 /** 单次截图的软超时：卡死的截图不允许永久冻结上传管线 */
 const CAPTURE_TIMEOUT_MS = 12000
 
@@ -82,7 +86,7 @@ async function doCapture(
       pixelRatio: 0.65,
       quality: 0.78,
       backgroundColor: '#101522',
-      ...(options.skipGifOverlays ? { filter: (node: HTMLElement) => !isGifImg(node) } : {}),
+      ...(options.skipGifOverlays ? { filter: (node: HTMLElement) => !isSkippedOverlay(node) } : {}),
     })
     // 超时后被放弃的迟到截图不再上传，防止旧画面覆盖新画面
     if (seq !== captureSeq) return false
@@ -102,9 +106,10 @@ async function doCapture(
   }
 }
 
-/** v3 页面形态判定：整页图片底图 + 元素全为图片（覆盖层），GIF 首帧已烘焙进底图 */
+/** v3 页面形态判定：整页图片底图 + 元素全为图片/视频（GIF 或转码视频覆盖层），
+ *  覆盖层首帧已烘焙进底图（转码视频带 poster），可安全跳过/驻留 */
 export function isBakedImagePage(slide: { background?: { type?: string } | null; elements?: Array<{ type?: string }> } | null | undefined): boolean {
   if (!slide || slide.background?.type !== 'image') return false
   const elements = slide.elements || []
-  return elements.every(el => el.type === 'image')
+  return elements.every(el => el.type === 'image' || el.type === 'video')
 }

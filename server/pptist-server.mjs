@@ -46,6 +46,7 @@ import { createStudioService } from './studio-service.mjs'
 import { parseMarkdownManifest } from './studio-html-md-manifest.mjs'
 import { createMonitorService } from './monitor-service.mjs'
 import { createDefaultPptV3 } from './default-ppt-v3.mjs'
+import { createGifTranscoder } from './gif-transcode.mjs'
 import { createMonitorMqttPublisher } from './monitor-mqtt-publisher.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -368,6 +369,49 @@ function createDocStore({ dataDir, label, deduplicateRaw = false }) {
     return next
   }
 
+  /**
+   * 以新 bundle 重新发布当前版本（GIF→视频转码升级用）：
+   * raw.file 用硬链接复用（同盘零拷贝），seq+1 触发播放端热替换。
+   */
+  function republishWithBundle(bundleText) {
+    const task = async () => {
+      if (!current) throw new Error('当前无已发布版本')
+      const oldDir = path.join(versionsDir, current.version)
+      if (!(await fsp.stat(path.join(oldDir, 'raw.file')).catch(() => null))) {
+        throw new Error('当前版本缺少 raw.file，无法重新发布')
+      }
+      const seq = (current?.seq || 0) + 1
+      const version = `v${seq}`
+      const meta = { ...current, seq, version, updatedAt: new Date().toISOString() }
+      const staging = path.join(tmpDir, `republish-${version}-${crypto.randomUUID()}`)
+      await fsp.mkdir(staging, { recursive: true })
+      try {
+        await fsp.writeFile(path.join(staging, 'bundle.json'), bundleText)
+        await fsp.writeFile(path.join(staging, 'meta.json'), JSON.stringify({ ...meta, schema: 'v3-republish' }, null, 2))
+        try {
+          await fsp.link(path.join(oldDir, 'raw.file'), path.join(staging, 'raw.file'))
+        } catch {
+          await fsp.copyFile(path.join(oldDir, 'raw.file'), path.join(staging, 'raw.file'))
+        }
+        const versionDir = path.join(versionsDir, version)
+        await fsp.rm(versionDir, { recursive: true, force: true })
+        await fsp.rename(staging, versionDir)
+        await atomicWrite(currentFile, JSON.stringify(meta, null, 2))
+      }
+      catch (error) {
+        await fsp.rm(staging, { recursive: true, force: true }).catch(() => {})
+        throw new Error(`重新发布失败：${error.message}`)
+      }
+      current = meta
+      await cleanupVersions()
+      broadcastVersion(meta)
+      return meta
+    }
+    const next = uploadChain.then(task, task)
+    uploadChain = next.catch(() => {})
+    return next
+  }
+
   async function handleUpload(req, res) {
     let upload = null
     try {
@@ -450,6 +494,7 @@ function createDocStore({ dataDir, label, deduplicateRaw = false }) {
     publicMeta,
     handleUpload,
     publishVersion,
+    republishWithBundle,
     serveEvents,
     serveSlides,
     serveFile,
@@ -461,7 +506,13 @@ function createDocStore({ dataDir, label, deduplicateRaw = false }) {
 const mainDocStore = createDocStore({ dataDir: DATA_DIR, label: '主屏文稿' })
 const secondaryDocStore = createDocStore({ dataDir: SECONDARY_DATA_DIR, label: '副屏文稿(PPTist B)', deduplicateRaw: true })
 // 主屏 v3 资源化扩展（资产池 + 会话上传 + 版本化 bundle）；副屏不受影响
-const defaultPptV3 = createDefaultPptV3({ store: mainDocStore, dataDir: DATA_DIR, maxUploadBytes: MAX_UPLOAD_MB * 1024 * 1024, log })
+// 超大 GIF → 视频转码（PPTIST_GIF_VIDEO_MB 阈值，默认 24MB；0 = 关闭）。找不到 ffmpeg 时自动禁用。
+const gifTranscoder = createGifTranscoder({
+  assetsDir: path.join(DATA_DIR, 'assets'),
+  thresholdMB: Math.max(0, Number(process.env.PPTIST_GIF_VIDEO_MB ?? 24)),
+  log,
+})
+const defaultPptV3 = createDefaultPptV3({ store: mainDocStore, dataDir: DATA_DIR, maxUploadBytes: MAX_UPLOAD_MB * 1024 * 1024, log, gifTranscoder })
 
 /** 读取原始请求体：优先按 Content-Length 一次性预分配（大文件上传避免双倍内存），超限立即断开 */
 function readRawBody(req, maxBytes) {

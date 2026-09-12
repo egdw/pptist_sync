@@ -75,7 +75,8 @@ const linkedHardCut = computed(() => {
 const renderedSlide = (index: number) => {
   const slide = slidesWithTurningMode.value[index]
   if (index === slideIndex.value || !linkedHardCut.value || !bakedMark.value[index]) return slide
-  const elements = slide.elements?.filter(el => !(el.type === 'image' && /\.gif(\?|$)/i.test(el.src || '')))
+  // 邻居页剥离重资源覆盖层：GIF 图片与视频（底图已烘焙首帧，视觉无损）
+  const elements = slide.elements?.filter(el => !(el.type === 'video' || (el.type === 'image' && /\.gif(\?|$)/i.test(el.src || ''))))
   return elements && elements.length !== slide.elements?.length ? { ...slide, elements } : slide
 }
 

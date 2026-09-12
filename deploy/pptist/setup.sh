@@ -16,6 +16,13 @@ if [ -d "data" ] || [ -f "config.env" ]; then
   echo "        联动方案(data/showflow/)、MQTT 配置(data/config/)、config.env"
 fi
 
+# ---- 0b. 超大 GIF → 视频转码依赖（可选）：无 ffmpeg 时大 GIF 保持原样 ----
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "[setup] 尝试安装 ffmpeg（用于超大 GIF 转视频，失败可跳过）..."
+  (sudo apt-get install -y ffmpeg || apt-get install -y ffmpeg) >/dev/null 2>&1 || \
+    echo "[setup] ffmpeg 未安装：超过 24MB 的 GIF 动图将只显示首帧，可稍后执行 apt-get install -y ffmpeg"
+fi
+
 # ---- 1. 解压包内自带的 Node.js 运行时（无需联网） ----
 NODE_TARBALL=$(ls runtime/node-v*-linux-arm64.tar.xz 2>/dev/null | head -1 || true)
 if [ ! -x "runtime/node/bin/node" ]; then
