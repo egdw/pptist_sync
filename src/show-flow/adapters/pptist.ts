@@ -20,6 +20,11 @@ export class PptistScreenAdapter implements ScreenAdapter {
     return buildPptistManifest(useSlidesStore().slides)
   }
 
+  /** 页面是否在当前文稿中（换稿后旧引用缺失时，控制器降级为「保持当前页」） */
+  hasPage(pageId: string): boolean {
+    return useSlidesStore().slides.some(slide => slide.id === pageId)
+  }
+
   async gotoById(pageId: string, commandId: string): Promise<void> {
     if (this.executedCommandIds.has(commandId)) return
     this.executedCommandIds.add(commandId)

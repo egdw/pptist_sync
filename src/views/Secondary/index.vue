@@ -126,7 +126,12 @@ const handleVersionNotice = (meta: DefaultPptMeta) => {
 const navigate = async (pageId: string) => {
   markNavigateActivity()
   const index = slidesStore.slides.findIndex(slide => slide.id === pageId)
-  if (index === -1) throw new Error(`副屏文稿中不存在页面 ${pageId}`)
+  if (index === -1) {
+    // 换稿后旧引用缺失：保持当前页并视为完成，控制器时间轴不中断；
+    // 重绑编排后「重发」即可恢复导航
+    console.warn(`[ShowFlow] 副屏页面不存在，保持当前页: ${pageId}`)
+    return
+  }
   slidesStore.updateSlideIndex(index)
   await nextTick()
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))

@@ -61,6 +61,14 @@ export class ShowFlowController {
   /** 各屏最近一次已实际导航到的 pageId（用于 keep 步骤的漂移补偿） */
   private appliedMainPageId: string | null = null
   private appliedSecondaryPageId: string | null = null
+  /** 已提示过的缺失页面引用（换稿后旧引用），同一引用只提示一次避免刷屏 */
+  private missingPageNotices = new Set<string>()
+
+  private noticeMissingPageOnce(pageId: string, screenLabel: string) {
+    if (this.missingPageNotices.has(pageId)) return
+    this.missingPageNotices.add(pageId)
+    this.callbacks.onNotice(`${screenLabel}引用的页面 ${pageId} 不在当前文稿中（换稿后引用保留），该步骤保持当前页继续；请在编排页重新绑定对应节点后「重发」`, 'warning')
+  }
 
   private getAdapters: () => { main: ScreenAdapter; secondary: ScreenAdapter | null }
   private transport: ShowFlowTransport
@@ -230,21 +238,28 @@ export class ShowFlowController {
       })
     }
 
-    // 主屏（本地）
+    // 主屏（本地）：换稿等导致页面引用缺失时降级为「保持当前页」，
+    // 不让时间轴卡死；同一缺失引用只提示一次，重绑后「重发」即可恢复
     if (mainPageToApply && main) {
-      try {
-        if (needsConfirm && mode === 'strict') {
-          await main.gotoById(mainPageToApply, commandId)
-        }
-        else {
-          main.gotoById(mainPageToApply, commandId).catch(() => {})
-        }
-        if (generation !== this.generation) return false
-        this.appliedMainPageId = mainPageToApply
+      const mainMissing = main.hasPage ? !(await main.hasPage(mainPageToApply)) : false
+      if (mainMissing) {
+        this.noticeMissingPageOnce(mainPageToApply, '主屏')
       }
-      catch (err) {
-        allAcked = false
-        this.callbacks.onNotice(`主屏切换失败：${(err as Error).message}`, 'error')
+      else {
+        try {
+          if (needsConfirm && mode === 'strict') {
+            await main.gotoById(mainPageToApply, commandId)
+          }
+          else {
+            main.gotoById(mainPageToApply, commandId).catch(() => {})
+          }
+          if (generation !== this.generation) return false
+          this.appliedMainPageId = mainPageToApply
+        }
+        catch (err) {
+          allAcked = false
+          this.callbacks.onNotice(`主屏切换失败：${(err as Error).message}`, 'error')
+        }
       }
     }
 

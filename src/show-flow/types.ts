@@ -58,6 +58,8 @@ export interface ScreenAdapter {
   getManifest(): Promise<PageManifest[]>
   /** 幂等：同一 commandId 多次调用只实际执行一次。resolve 即代表页面切换完成且渲染过至少一帧（ACK 前置条件） */
   gotoById(pageId: string, commandId: string): Promise<void>
+  /** 页面是否存在于当前文稿（缺引用时播放端降级为「保持当前页」而不是失败） */
+  hasPage?(pageId: string): boolean | Promise<boolean>
   getCurrentPageId(): string | null
   refresh(): Promise<void>
 }

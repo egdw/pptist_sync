@@ -193,6 +193,39 @@ const main = async () => {
   }
   finally { globalThis.fetch = originalFetch }
 
+  // —— 换稿后主屏引用缺失：降级保持当前页 + 一次性提示，时间轴不中断 ——
+  {
+    const missingSteps = [
+      { id: 'm-1', order: 1, main: { action: 'goto', pageId: 'a1' } },
+      { id: 'm-2', order: 2, main: { action: 'goto', pageId: 'ghost' } },
+      { id: 'm-3', order: 3, main: { action: 'keep' } },
+    ]
+    const calls = []
+    let notices: any[] = []
+    const missing = new ShowFlowController(
+      () => ({
+        // ghost 不在文稿中（换稿后旧引用）：hasPage 返回 false
+        main: {
+          gotoById: async (pageId, cmd) => { calls.push(pageId) },
+          hasPage: pageId => pageId !== 'ghost',
+        } as any,
+        secondary: { gotoById: async () => {} },
+      }),
+      { sendToRole: () => {} },
+      { onPhaseChange: () => {}, onStepChange: () => {}, onNotice: (text, type) => notices.push({ text, type }) },
+      () => ({ enabled: true, confirmationEnabled: false, confirmationMode: 'strict', stepCount: missingSteps.length }),
+    )
+    missing.registerStepsAccessor(i => missingSteps[i] as any)
+    await missing.start(0)
+    const ok2 = await missing.next()
+    ok(ok2 === true && missing.ready, '缺引用: 步骤完成不卡死，回到 READY')
+    ok(calls.join(',') === 'a1', '缺引用: 未对缺失页发起导航')
+    const warnNotices = notices.filter(n => n.type === 'warning')
+    ok(warnNotices.length === 1 && /ghost/.test(warnNotices[0].text), '缺引用: 恰好一次提示且包含页面 id')
+    await missing.next() // keep 步骤：漂移补偿再次遇到 ghost，静默跳过
+    ok(notices.filter(n => n.type === 'warning').length === 1, '缺引用: 同一引用不重复提示')
+  }
+
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
   process.exit(fail ? 1 : 0)
 }
