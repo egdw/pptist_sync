@@ -294,7 +294,7 @@ async function deleteTheme(id:string) {
   catch(error:any){message.error(error.message || '删除失败')}
 }
 async function saveThemeCss(){try{const r=await fetch('/api/studio/themes/draft/css',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({css:themeCss.value})});const data=await r.json();if(!r.ok)throw new Error(data.error);status.value=data.status;previewKey.value++;await loadThemes()}catch(error:any){message.error(error.message || 'CSS保存失败')}}
-async function loadLcdThemes(){const data=await(await fetch('/api/studio/lcd/themes')).json();lcdThemes.value=data.themes;const draft=await(await fetch('/api/studio/lcd/themes/draft')).json();Object.assign(lcdConfig,draft.config||{});if(!lcdResult.value)await renderStudioLcd();await loadLcdPortraits()}
+async function loadLcdThemes(){try{const data=await(await fetch('/api/studio/lcd/themes')).json();lcdThemes.value=data.themes||[];const r=await fetch('/api/studio/lcd/themes/draft');if(!r.ok)throw new Error(`读取 Draft 配置失败(${r.status})，请确认服务端为最新版本`);const draft=await r.json();Object.assign(lcdConfig,draft.config||{})}catch(e:any){lcdMessage.value=`LCD 配置加载失败：${e.message}（当前显示为内置默认值，不是已保存的值）`};if(!lcdResult.value)await renderStudioLcd();await loadLcdPortraits()}
 
 // ---- LCD 头像（四块 LCD 屏的人头，独立于 reveal 页头像） ----
 const lcdPortraits = ref<any[]>([])
@@ -322,8 +322,18 @@ async function uploadLcdPortrait(role: Role, event: Event) {
   input.value = ''
 }
 async function uploadLcdTheme(event:Event){const input=event.target as HTMLInputElement,file=input.files?.[0];if(!file)return;const r=await fetch('/api/studio/lcd/themes/upload',{method:'POST',headers:{'X-Filename':encodeURIComponent(file.name)},body:file});const data=await r.json();if(!r.ok)alert(data.error);input.value='';await loadLcdThemes()}
-async function selectLcdTheme(id:string){const data=await(await fetch(`/api/studio/lcd/themes/${encodeURIComponent(id)}/preview`,{method:'POST'})).json();Object.assign(lcdConfig,data.config);status.value=data.status;await loadLcdThemes();await renderStudioLcd()}
-async function saveLcdConfig(){const id=lcdThemes.value.find((x:any)=>x.draft)?.id||'default';const data=await(await fetch('/api/studio/lcd/themes/draft',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,config:lcdConfig})})).json();Object.assign(lcdConfig,data.config);status.value=data.status;await loadLcdThemes();await renderStudioLcd();lcdMessage.value='LCD Draft 已保存并重新渲染'}
+async function selectLcdTheme(id:string){const r=await fetch(`/api/studio/lcd/themes/${encodeURIComponent(id)}/preview`,{method:'POST'});const data=await r.json();if(!r.ok){lcdMessage.value=`切换主题失败：${data.error||r.status}`;return}Object.assign(lcdConfig,data.config);status.value=data.status;await loadLcdThemes();await renderStudioLcd()}
+async function saveLcdConfig(){
+  try{
+    const id=lcdThemes.value.find((x:any)=>x.draft)?.id||'default'
+    const r=await fetch('/api/studio/lcd/themes/draft',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,config:lcdConfig})})
+    const data=await r.json()
+    if(!r.ok)throw new Error(data.error||`保存失败(${r.status})，请确认服务端已重启为最新版本`)
+    Object.assign(lcdConfig,data.config);status.value=data.status
+    await loadLcdThemes();await renderStudioLcd()
+    lcdMessage.value=`已真实保存到 Draft 主题「${data.id}」，刷新后仍生效`
+  }catch(e:any){lcdMessage.value=`保存失败：${e.message}`}
+}
 
 // ---- LCD 主题包：协议说明 + JSON 高级编辑 ----
 const lcdProtocol = `LCD 画面由服务端 Canvas 渲染为 JPEG(1280×800),

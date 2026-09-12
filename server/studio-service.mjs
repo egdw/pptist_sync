@@ -452,7 +452,8 @@ ZIP 内必须包含 lcd-theme.json（仅允许 JSON 文件，≤20MB）。
   }
   async function saveLcdTheme(id, config) {
     const meta = await readMeta(); let targetId = id
-    if (!targetId || targetId === 'default') targetId = `lcd-custom-${Date.now().toString(36)}`
+    // 面板「保存 Draft」未指定主题时复用固定 ID：反复保存是更新草稿，不产生新主题
+    if (!targetId || targetId === 'default') targetId = 'lcd-custom'
     if (safeName(targetId) !== targetId) throw new Error('无效 LCD Theme ID')
     await atomicWrite(path.join(lcdThemesDir, targetId, 'lcd-theme.json'), JSON.stringify(validateLcdConfig(config), null, 2))
     meta.draftLcdTheme = targetId; await writeMeta(meta)

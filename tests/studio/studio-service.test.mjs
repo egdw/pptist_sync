@@ -43,6 +43,12 @@ try {
   assert.match(lcdSaved.config.customCss, /footer-font-size/)
   await service.selectDraftLcdTheme('large-text')
   assert.equal((await service.status()).draftLcdTheme, 'large-text')
+  // 保存→刷新回读：draft 接口必须返回刚保存的全部字段（用户报告过刷新丢值）
+  const draftReadBack = await service.draftLcdConfig()
+  assert.equal(draftReadBack.id, 'large-text')
+  assert.equal(draftReadBack.config.taskFontSize, 72)
+  assert.equal(draftReadBack.config.stageLabelFontSize, 35)
+  assert.match(draftReadBack.config.customCss, /footer-font-size/)
   const lcdZip = new AdmZip(); lcdZip.addFile('lcd-theme.json', Buffer.from(JSON.stringify({taskFontSize:66})))
   assert.equal((await service.uploadLcdTheme('lcd-upload.zip', lcdZip.toBuffer())).config.taskFontSize, 66)
   const badTheme = new AdmZip(); badTheme.addFile('xx/theme.css', Buffer.from('bad'))
