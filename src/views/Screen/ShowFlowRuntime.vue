@@ -44,4 +44,28 @@ watch(() => showFlowStore.flow.enabled, enabled => {
 onUnmounted(() => {
   document.documentElement.classList.remove('showflow-active')
 })
+
+// ---- 空闲驻留：长时间无操作时停播 GIF，防止长驻页面拖垮放映机 ----
+// 大 GIF（实测单页最大 134MB，解码驻留 +500MB+）循环播放是空闲卡死的
+// 主要内存压力；v3 页面底图已烘焙 GIF 首帧，驻留时隐藏覆盖层视觉无损，
+// 任意键鼠操作立即恢复动图。
+const GIF_PARK_IDLE_MS = 5 * 60 * 1000
+let lastActivityAt = Date.now()
+const activityEvents = ['keydown', 'pointerdown', 'mousemove', 'wheel'] as const
+const markActivity = () => {
+  lastActivityAt = Date.now()
+  document.documentElement.classList.remove('gif-parked')
+}
+let parkTimer = 0
+onMounted(() => {
+  for (const type of activityEvents) window.addEventListener(type, markActivity, { passive: true })
+  parkTimer = window.setInterval(() => {
+    if (Date.now() - lastActivityAt >= GIF_PARK_IDLE_MS) document.documentElement.classList.add('gif-parked')
+  }, 10_000)
+})
+onUnmounted(() => {
+  for (const type of activityEvents) window.removeEventListener(type, markActivity)
+  if (parkTimer) clearInterval(parkTimer)
+  document.documentElement.classList.remove('gif-parked')
+})
 </script>

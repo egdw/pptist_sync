@@ -124,13 +124,14 @@ const handleVersionNotice = (meta: DefaultPptMeta) => {
 // ---------- ShowFlow 副屏客户端（受控导航 + 渲染后 ACK + 幂等） ----------
 /** 切页 → nextTick → 至少一帧渲染后才 resolve（ SecondaryShowFlowClient 据此回 ACK） */
 const navigate = async (pageId: string) => {
+  markNavigateActivity()
   const index = slidesStore.slides.findIndex(slide => slide.id === pageId)
   if (index === -1) throw new Error(`副屏文稿中不存在页面 ${pageId}`)
   slidesStore.updateSlideIndex(index)
   await nextTick()
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
   if (slidesStore.slides[slidesStore.slideIndex]?.id !== pageId) return
-  // 双 PPT 合成监控：副屏页变化(含首次)自动截图上传，与主屏合成 1280×800
+// 双 PPT 合成监控：副屏页变化(含首次)自动截图上传，与主屏合成 1280×800
   const el = document.querySelector('.screen-slide-list .slide-item.current .slide-content')
   if (el) {
     clearTimeout(captureTimer)
@@ -143,6 +144,25 @@ const navigate = async (pageId: string) => {
     }, 180)
   }
 }
+
+// ---- 空闲驻留：长时间无导航时停播 GIF，防止长驻页面拖垮放映机 ----
+// 副屏无人操作是常态，按「最近一次导航/同步」计时；v3 底图已烘焙 GIF
+// 首帧，驻留时隐藏覆盖层视觉无损，收到新导航立即恢复。
+let lastNavigateAt = Date.now()
+let parkTimer = 0
+const markNavigateActivity = () => {
+  lastNavigateAt = Date.now()
+  document.documentElement.classList.remove('gif-parked')
+}
+onMounted(() => {
+  parkTimer = window.setInterval(() => {
+    if (Date.now() - lastNavigateAt >= 5 * 60 * 1000) document.documentElement.classList.add('gif-parked')
+  }, 10_000)
+})
+onUnmounted(() => {
+  if (parkTimer) clearInterval(parkTimer)
+  document.documentElement.classList.remove('gif-parked')
+})
 let captureTimer = 0
 
 let client: SecondaryShowFlowClient | null = null

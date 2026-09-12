@@ -22,10 +22,11 @@
           width: slideWidth + 'px',
           height: slideHeight + 'px',
         }"
+        :data-gif-baked="bakedMark[index] || null"
         v-if="Math.abs(slideIndex - index) < 2"
       >
         <ScreenSlide 
-          :slide="slide" 
+          :slide="renderedSlide(index)" 
           :scale="scale"
           :animationIndex="animationIndex"
           :turnSlideToId="turnSlideToId"
@@ -40,6 +41,8 @@
 import { computed, provide } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useSlidesStore } from '@/store'
+import { useShowFlowStore } from '@/show-flow/store'
+import { isBakedImagePage } from '@/show-flow/monitor'
 import { injectKeySlideScale } from '@/types/injectKey'
 import useSlidesWithTurningMode from './hooks/useSlidesWithTurningMode'
 
@@ -56,6 +59,25 @@ const props = defineProps<{
 const { slideIndex, viewportSize } = storeToRefs(useSlidesStore())
 
 const { slidesWithTurningMode } = useSlidesWithTurningMode()
+
+// v3 页面标记：整页底图已烘焙 GIF 首帧。供空闲驻留 CSS（html.gif-parked）
+// 精确隐藏 GIF 覆盖层而不影响普通页面。
+const bakedMark = computed(() => slidesWithTurningMode.value.map(s => (isBakedImagePage(s) ? '1' : '')))
+
+// 联动硬切模式（showflow-jump 无过渡）下邻居页永远不会露出画面，
+// 其 GIF 覆盖层无需挂载——否则当前页±1 的大 GIF（实测最大 134MB/个）
+// 同时解码驻留，长演示/中场休息时把放映机内存拖垮（约 30 分钟卡死反馈）。
+// 底图含 GIF 首帧，剥离覆盖层后视觉无损；普通放映保留原行为。
+const linkedHardCut = computed(() => {
+  const showFlowStore = useShowFlowStore()
+  return showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
+})
+const renderedSlide = (index: number) => {
+  const slide = slidesWithTurningMode.value[index]
+  if (index === slideIndex.value || !linkedHardCut.value || !bakedMark.value[index]) return slide
+  const elements = slide.elements?.filter(el => !(el.type === 'image' && /\.gif(\?|$)/i.test(el.src || '')))
+  return elements && elements.length !== slide.elements?.length ? { ...slide, elements } : slide
+}
 
 const scale = computed(() => props.slideWidth / viewportSize.value)
 provide(injectKeySlideScale, scale)
