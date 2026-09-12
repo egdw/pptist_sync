@@ -126,7 +126,7 @@ import {
   type DefaultPptConfig,
   type DefaultPptMeta,
 } from '@/services/defaultPpt'
-import { renderSlideToPngDataUrl, dataUrlToBlob } from '@/services/pageImageExport'
+import { renderSlideToPngDataUrl, dataUrlToBlob, makeGifFirstFramePoster } from '@/services/pageImageExport'
 import type { PPTImageElement } from '@/types/slides'
 import { copyText } from '@/utils/clipboard'
 import message from '@/utils/message'
@@ -425,14 +425,34 @@ const prepareMainDeckV3 = async (sessionId: string) => {
   // 上传一次映射为资产 URL；全部页面处理完后统一 revoke（提前 revoke 会让后续元素 fetch 失败）
   const gifAssetByUrl = new Map<string, string>()
   const allBlobUrls = new Set<string>()
+  // blob URL → Blob 缓存（海报生成与资产上传共用，每张图只 fetch 一次）；
+  // blob URL → GIF 首帧 PNG 海报（烘焙底图专用，避免把整只动图 base64 进 SVG）
+  const blobCache = new Map<string, Blob>()
+  const posterByUrl = new Map<string, string>()
 
   for (let i = 0; i < total; i++) {
     const slide = v3.slides[i]
     statusText.value = `生成页面图片（${i + 1}/${total}）...`
     progressPercent.value = Math.round((i / total) * 70)
 
-    // 1. 整页离屏渲染为 PNG（全部静态内容含 GIF 首帧烘焙进底图；空 src 图片元素已剔除）
-    const pngDataUrl = await renderSlideToPngDataUrl(slide, viewportSize, viewportRatio)
+    // 0. 预取本页图片：GIF 生成首帧海报（烘焙前完成，渲染时替换引用）
+    for (const el of slide.elements) {
+      if (el.type !== 'image' || !el.src?.startsWith('blob:')) continue
+      if (!blobCache.has(el.src)) blobCache.set(el.src, await (await fetch(el.src)).blob())
+      if (blobCache.get(el.src)!.type === 'image/gif' && !posterByUrl.has(el.src)) {
+        posterByUrl.set(el.src, await makeGifFirstFramePoster(el.src))
+      }
+    }
+    const bgSrc = (slide.background as { image?: { src?: string } } | null)?.image?.src
+    if (bgSrc?.startsWith('blob:')) {
+      if (!blobCache.has(bgSrc)) blobCache.set(bgSrc, await (await fetch(bgSrc)).blob())
+      if (blobCache.get(bgSrc)!.type === 'image/gif' && !posterByUrl.has(bgSrc)) {
+        posterByUrl.set(bgSrc, await makeGifFirstFramePoster(bgSrc))
+      }
+    }
+
+    // 1. 整页离屏渲染为 PNG（全部静态内容含 GIF 首帧烘焙进底图；GIF 引用已替换为首帧海报）
+    const pngDataUrl = await renderSlideToPngDataUrl(slide, viewportSize, viewportRatio, undefined, posterByUrl)
     const pagePut = await fetch(`${sessionUrl}/assets`, {
       method: 'PUT',
       headers: { 'Content-Type': 'image/png', 'X-Asset-Ext': 'png' },
@@ -447,10 +467,10 @@ const prepareMainDeckV3 = async (sessionId: string) => {
     for (const el of slide.elements) {
       if (el.type !== 'image' || !el.src?.startsWith('blob:')) continue
       allBlobUrls.add(el.src)
+      const blob = blobCache.get(el.src)!
+      if (blob.type !== 'image/gif') continue // 静态图：已烘焙
       let assetUrl = gifAssetByUrl.get(el.src)
       if (!assetUrl) {
-        const blob = await (await fetch(el.src)).blob()
-        if (blob.type !== 'image/gif') continue // 静态图：已烘焙
         const gifPut = await fetch(`${sessionUrl}/assets`, {
           method: 'PUT',
           headers: { 'Content-Type': 'image/gif', 'X-Asset-Ext': 'gif' },

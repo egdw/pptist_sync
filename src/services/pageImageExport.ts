@@ -27,25 +27,57 @@ const PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAAL
 
 /** 剔除解析产物中的空图片元素：pptxtojson 对提取失败的图片给出空 base64，
  *  <img src=""> 会被浏览器解析为当前页面 URL，html-to-image 嵌图时会把整页 HTML 当图片拉取导致失败 */
-function sanitizeSlide(slide: Slide): Slide {
+function sanitizeSlide(slide: Slide, posterMap?: Map<string, string>): Slide {
   const cleaned: Slide = { ...slide }
   if (Array.isArray(slide.elements)) {
-    cleaned.elements = slide.elements.filter(el => {
-      if (el.type === 'image') return !!el.src
-      return true
-    }) as Slide['elements']
+    cleaned.elements = slide.elements
+      .filter(el => {
+        if (el.type === 'image') return !!el.src
+        return true
+      })
+      .map(el => {
+        // 烘焙底图时 GIF 用首帧小图替代：html-to-image 会把整只动图字节 base64
+        // 进 SVG（实测单只可达 139MB → ~190MB 字符串/页），是上传阶段崩溃的主因；
+        // 底图只需要首帧，播放端动画由真 GIF 覆盖层承担
+        if (el.type === 'image' && posterMap?.has(el.src!)) {
+          return { ...el, src: posterMap.get(el.src!) } as typeof el
+        }
+        return el
+      }) as Slide['elements']
   }
+  // GIF 作为整页背景时同理（否则烘焙会把整只动图嵌进 SVG）
+  const bg = slide.background as { type?: string; image?: { src?: string } } | undefined
+  const poster = bg?.image?.src ? posterMap?.get(bg.image.src) : undefined
+  if (poster) cleaned.background = { ...slide.background, image: { ...bg!.image, src: poster } } as Slide['background']
   return cleaned
 }
 
-/** 渲染单页为 PNG dataURL（调用方负责提供页面所在的 Pinia 上下文数据） */
+/** GIF 首帧海报：blob URL → PNG dataURL（保留透明度；烘焙底图专用） */
+export async function makeGifFirstFramePoster(src: string, maxWidth = 1000): Promise<string> {
+  const img = new Image()
+  img.decoding = 'sync'
+  img.src = src
+  await img.decode()
+  const scale = Math.min(1, maxWidth / Math.max(1, img.naturalWidth))
+  const w = Math.max(1, Math.round(img.naturalWidth * scale))
+  const h = Math.max(1, Math.round(img.naturalHeight * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+  return canvas.toDataURL('image/png')
+}
+
+/** 渲染单页为 PNG dataURL（调用方负责提供页面所在的 Pinia 上下文数据）。
+ *  posterMap：src → GIF 首帧 dataURL，烘焙时替换原 GIF 引用以避免嵌入整只动图 */
 export async function renderSlideToPngDataUrl(
   slide: Slide,
   viewportSize: number,
   viewportRatio: number,
   width = RENDER_WIDTH,
+  posterMap?: Map<string, string>,
 ): Promise<string> {
-  const safeSlide = sanitizeSlide(slide)
+  const safeSlide = sanitizeSlide(slide, posterMap)
   const host = document.createElement('div')
   host.style.cssText = 'position:fixed;left:-99999px;top:0;margin:0;padding:0;'
   document.body.appendChild(host)
