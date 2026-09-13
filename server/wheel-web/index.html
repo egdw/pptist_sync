@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方向盘测试台 · G29</title>
+<style>
+  :root { --bg:#0d1524; --card:#141f33; --line:#26324a; --txt:#dbe7f5; --dim:#7f8ba0; --ok:#34d399; --warn:#fbbf24; --err:#f87171; --accent:#4f9cf9; }
+  * { box-sizing:border-box; margin:0; padding:0 }
+  body { background:var(--bg); color:var(--txt); font:14px/1.5 "Microsoft YaHei",system-ui,sans-serif; padding:18px; }
+  h1 { font-size:18px; display:flex; align-items:center; gap:10px; flex-wrap:wrap }
+  h1 .dot { width:10px; height:10px; border-radius:50%; background:var(--err) }
+  h1 .dot.ok { background:var(--ok) } h1 .dot.warn { background:var(--warn) }
+  .bar-row { display:flex; gap:8px; align-items:center; margin:12px 0; flex-wrap:wrap }
+  input[type=text] { background:#0a101d; border:1px solid var(--line); color:var(--txt); border-radius:6px; padding:7px 10px; width:280px; font-size:13px }
+  button { background:#1b2a44; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:7px 14px; cursor:pointer; font-size:13px }
+  button:hover { background:#243study65a }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff }
+  button:disabled { opacity:.4; cursor:not-allowed }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; margin-top:14px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px }
+  .card h2 { font-size:13px; color:var(--dim); margin-bottom:10px; font-weight:600 }
+  .num { font:600 30px/1.1 Consolas,monospace }
+  .num small { font-size:13px; color:var(--dim); font-weight:400 }
+  .vbar { position:relative; height:26px; background:#0a101d; border-radius:6px; overflow:hidden; margin:6px 0 12px }
+  .vbar>i { position:absolute; inset:0 auto 0 0; width:0; transition:width .05s linear; border-radius:6px }
+  .vbar.thr>i { background:linear-gradient(90deg,#0e9f6e,#34d399) }
+  .vbar.brk>i { background:linear-gradient(90deg,#c81e1e,#f87171) }
+  .vbar.clu>i { background:linear-gradient(90deg,#8b5cf6,#a78bfa) }
+  .vbar span { position:absolute; right:8px; top:4px; font:600 12px Consolas,monospace; color:#fff; text-shadow:0 1px 2px #000 }
+  .wheel-wrap { display:flex; justify-content:center; padding:8px 0 }
+  .dial { transform:rotate(0deg); transition:transform .05s linear; filter:drop-shadow(0 4px 12px rgba(79,156,249,.25)) }
+  .kv { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px dashed var(--line); font:12px Consolas,monospace }
+  .kv b { color:var(--accent); font-weight:600 }
+  .btn-grid { display:grid; grid-template-columns:repeat(8,1fr); gap:5px; margin-top:6px }
+  .btn-grid b { background:#0a101d; border:1px solid var(--line); border-radius:5px; text-align:center; font:600 11px/26px Consolas,monospace; color:var(--dim) }
+  .btn-grid b.on { background:var(--accent); color:#fff; border-color:var(--accent) }
+  .banner { display:none; background:rgba(248,113,113,.15); border:1px solid var(--err); color:var(--err); border-radius:8px; padding:10px 14px; margin-top:12px; font-weight:600 }
+  .banner.show { display:block }
+  .hint { color:var(--dim); font-size:12px; margin-top:8px }
+  .rec-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--err); margin-right:6px; animation:blink 1s infinite }
+  @keyframes blink { 50% { opacity:.2 } }
+  label.ctl { display:flex; align-items:center; gap:10px; margin:10px 0; font-size:13px }
+  input[type=range] { flex:1; accent-color:var(--accent) }
+</style>
+</head>
+<body>
+<h1>
+  <span class="dot" id="dot"></span>
+  方向盘测试台 <small style="color:var(--dim);font-weight:400">G29 Driving Force</small>
+  <span id="hz" style="font:600 12px Consolas,monospace;color:var(--dim)"></span>
+</h1>
+
+<div class="bar-row">
+  <input type="text" id="base" placeholder="http://192.168.2.8:8000">
+  <button class="primary" id="connect">连接</button>
+  <button id="rec">开始记录</button>
+  <span id="recInfo" style="font-size:12px;color:var(--dim)"></span>
+</div>
+<div class="hint">连接建立后自动接收 50Hz 实时状态。力反馈开启会让方向盘产生真实阻力，请握稳。GPIO 仅只读显示（不动执行器）。</div>
+
+<div class="banner" id="accident">⚠ is_accident = true —— 碰撞信号触发中</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>转向 STEERING</h2>
+    <div class="wheel-wrap">
+      <svg class="dial" id="dial" width="170" height="170" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="45" fill="none" stroke="#26324a" stroke-width="7"/>
+        <circle cx="50" cy="50" r="45" fill="none" stroke="#4f9cf9" stroke-width="7" stroke-dasharray="70 213" stroke-dashoffset="-141" transform="rotate(90 50 50)"/>
+        <rect x="46" y="6" width="8" height="16" rx="2" fill="#fbbf24"/>
+        <rect x="44" y="44" width="12" height="34" rx="4" fill="#dbe7f5"/>
+        <rect x="20" y="52" width="60" height="8" rx="4" fill="#dbe7f5"/>
+        <circle cx="50" cy="50" r="4" fill="#fbbf24"/>
+      </svg>
+    </div>
+    <div class="num" style="text-align:center"><span id="angle">0.0</span><small> °</small></div>
+    <div class="kv"><span>normalized</span><b id="norm">—</b></div>
+    <div class="kv"><span>raw</span><b id="raw">—</b></div>
+  </div>
+
+  <div class="card">
+    <h2>踏板 PEDALS</h2>
+    <div class="vbar thr"><i id="thr"></i><span id="thrV">0%</span></div>
+    <div class="vbar brk"><i id="brk"></i><span id="brkV">0%</span></div>
+    <div class="vbar clu"><i id="clu"></i><span id="cluV">0%</span></div>
+    <div class="kv"><span>throttle_raw / brake_raw / clutch_raw</span><b id="raws">—</b></div>
+    <div class="kv"><span>服务-本机时钟差(ts)</span><b id="lag">—</b></div>
+  </div>
+
+  <div class="card">
+    <h2>按钮 BUTTONS + HAT</h2>
+    <div class="btn-grid" id="btns"></div>
+    <div class="kv" style="margin-top:10px"><span>hat (十字键)</span><b id="hat">x:0 y:0</b></div>
+    <div class="hint">按下方向盘任意按钮，对应格亮起。G29 共 29 键（含 PS/分享/选项）。</div>
+  </div>
+
+  <div class="card">
+    <h2>力反馈 FORCE FEEDBACK <span id="ffState" style="color:var(--dim)"></span></h2>
+    <label class="ctl">启用 <input type="checkbox" id="ffEnabled"></label>
+    <label class="ctl">增益 <input type="range" id="ffGain" min="0" max="100" value="40"><b id="ffGainV" style="width:34px">40</b></label>
+    <label class="ctl">自动回中 <input type="range" id="ffAuto" min="0" max="100" value="1"><b id="ffAutoV" style="width:34px">1</b></label>
+    <div class="hint">用于演示「制动失效」等场景的方向盘震动/阻力效果。</div>
+  </div>
+
+  <div class="card">
+    <h2>GPIO（只读）</h2>
+    <div class="kv"><span>forward / reverse</span><b id="gpioFr">—</b></div>
+    <div class="kv"><span>left / right</span><b id="gpioLr">—</b></div>
+    <div class="kv"><span>drive_power</span><b id="gpioPwr">—</b></div>
+    <div class="hint">碰撞传感与执行器状态由台架服务自身管理。</div>
+  </div>
+
+  <div class="card">
+    <h2>链路质量</h2>
+    <div class="kv"><span>消息频率</span><b id="rate">—</b></div>
+    <div class="kv"><span>最近消息年龄</span><b id="age">—</b></div>
+    <div class="kv"><span>设备</span><b id="dev">—</b></div>
+    <div class="kv"><span>服务健康</span><b id="health">—</b></div>
+    <div class="hint">记录功能把转向+踏板按帧存为 JSON，可下载用于黑匣子演示素材。</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id)
+  const baseInput = $('base')
+  baseInput.value = localStorage.getItem('wheel.base') || 'http://192.168.2.8:8000'
+
+  // 按钮网格: G29 29 键
+  const btnGrid = $('btns')
+  for (let i = 1; i <= 29; i++) { const b = document.createElement('b'); b.textContent = i; btnGrid.appendChild(b) }
+
+  let ws = null, stats = { count: 0, lastTs: 0, lastLocal: 0 }, recording = [], recTimer = 0
+  window.__wheel = { get connected() { return ws && ws.readyState === 1 } }
+
+  const setDot = (cls, text) => { $('dot').className = 'dot ' + cls; $('hz').textContent = text }
+
+  const render = s => {
+    const angle = s.steering?.angle ?? 0
+    $('angle').textContent = angle.toFixed(1)
+    $('dial').style.transform = `rotate(${angle}deg)`
+    $('norm').textContent = (s.steering?.normalized ?? 0).toFixed(4)
+    $('raw').textContent = s.steering?.raw ?? '—'
+    const thr = s.pedals?.throttle ?? 0, brk = s.pedals?.brake ?? 0, clu = s.pedals?.clutch ?? 0
+    $('thr').style.width = (thr * 100) + '%'; $('thrV').textContent = Math.round(thr * 100) + '%'
+    $('brk').style.width = (brk * 100) + '%'; $('brkV').textContent = Math.round(brk * 100) + '%'
+    $('clu').style.width = (clu * 100) + '%'; $('cluV').textContent = Math.round(clu * 100) + '%'
+    $('raws').textContent = `${s.pedals?.throttle_raw} / ${s.pedals?.brake_raw} / ${s.pedals?.clutch_raw}`
+    $('lag').textContent = Math.max(0, Date.now() / 1000 - (s.timestamp || 0)).toFixed(1) + ' s'
+    const pressed = s.buttons || {}
+    const cells = btnGrid.children
+    for (let i = 1; i <= 29; i++) {
+      const key = String(i)
+      cells[i - 1].className = pressed[key] || pressed[key - 1] ? 'on' : ''
+    }
+    $('hat').textContent = `x:${s.hat?.x ?? 0} y:${s.hat?.y ?? 0}`
+    $('accident').className = s.is_accident ? 'banner show' : 'banner'
+    $('dev').textContent = s.device?.name || '—'
+    if (recording.length && recording.push) recording.push({ t: s.timestamp, a: angle, th: thr, br: brk, cl: clu, acc: s.is_accident })
+    if (recording.length && recording.length % 500 === 0) $('recInfo').textContent = `已记录 ${recording.length} 帧`
+  }
+
+  // 台架服务对异常断开的客户端可能挂起：页面卸载/隐藏时必须发送 close 帧干净断开
+  window.addEventListener('beforeunload', () => { try { ws?.close() } catch {} })
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { /* 保持连接, 仅提示 */ } })
+
+  const connect = () => {
+    const base = baseInput.value.trim().replace(/\/+$/, '')
+    localStorage.setItem('wheel.base', base)
+    if (ws) try { ws.close() } catch {}
+    setDot('', '连接中…')
+    ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws/g29')
+    ws.onopen = () => { setDot('ok', '已连接'); fetch('/wheel-api/health').then(r => r.json()).then(h => { $('health').textContent = h.status + (h.mqtt_enabled ? ' · MQTT' : '') }).catch(() => {}) }
+    ws.onmessage = e => {
+      stats.count++; stats.lastLocal = performance.now()
+      try { render(JSON.parse(e.data)) } catch {}
+    }
+    ws.onclose = () => setDot('', '已断开')
+    ws.onerror = () => setDot('warn', '连接失败（检查地址/网络）')
+  }
+  $('connect').onclick = connect
+
+  // 频率/年龄统计
+  setInterval(() => {
+    const hz = stats.count
+    stats.count = 0
+    $('rate').textContent = hz ? hz + ' Hz' : '—'
+    if (stats.lastLocal && hz) $('age').textContent = ((performance.now() - stats.lastLocal) / 1000).toFixed(2) + ' s'
+  }, 1000)
+
+  // 力反馈
+  const ffPost = () => {
+    const base = baseInput.value.trim().replace(/\/+$/, '')
+    fetch('/wheel-api/api/g29/force-feedback', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: $('ffEnabled').checked, gain: +$('ffGain').value, autocenter: +$('ffAuto').value }),
+    }).then(r => r.json()).then(j => { $('ffState').textContent = j.enabled ? '· 已开启' : '· 已关闭' }).catch(() => { $('ffState').textContent = '· 发送失败' })
+  }
+  $('ffEnabled').onchange = ffPost
+  $('ffGain').oninput = () => { $('ffGainV').textContent = $('ffGain').value }
+  $('ffGain').onchange = ffPost
+  $('ffAuto').oninput = () => { $('ffAutoV').textContent = $('ffAuto').value }
+  $('ffAuto').onchange = ffPost
+
+  // 记录
+  $('rec').onclick = () => {
+    if (recording.length) {
+      const blob = new Blob([JSON.stringify(recording)], { type: 'application/json' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `g29-record-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+      a.click()
+      recording = []
+      $('rec').textContent = '开始记录'
+      $('rec').innerHTML = '开始记录'
+      $('recInfo').textContent = ''
+      return
+    }
+    recording = [{ t: 0 }]
+    recording.shift()
+    $('rec').innerHTML = '<span class="rec-dot"></span>停止并下载'
+    $('recInfo').textContent = '记录中…'
+  }
+
+  connect()
+})()
+</script>
+</body>
+</html>

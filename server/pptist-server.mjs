@@ -1053,6 +1053,44 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 副屏 Reveal / Markdown 演示页（静态托管）。
+    // 方向盘测试台：自包含静态页（连接台架 G29 服务, 默认 http://192.168.2.8:8000）
+    if (pathname === '/wheel' || pathname === '/wheel/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+      res.end(await fsp.readFile(path.join(__dirname, 'wheel-web', 'index.html')))
+      return
+    }
+    // G29 台架服务代理：浏览器直连会被 CORS 拦截（WebSocket 不受限, 数据流无碍；
+    // /health 与力反馈 POST 走代理）。目标可用 PPTIST_WHEEL_SERVICE 覆盖。
+    const wheelApiMatch = pathname.match(/^\/wheel-api\/(health|api\/[a-z0-9\/_-]+)$/)
+    if (wheelApiMatch) {
+      const wheelBase = (process.env.PPTIST_WHEEL_SERVICE || 'http://192.168.2.8:8000').replace(/\/+$/, '')
+      try {
+        const chunks = []; let size = 0
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          for await (const chunk of req) { size += chunk.length; if (size > 64 * 1024) throw new Error('请求体过大'); chunks.push(chunk) }
+        }
+        // 台架服务挂死时 TCP 层可能长期无响应：3s 超时避免代理请求无限堆积
+        const abort = new AbortController()
+        const abortTimer = setTimeout(() => abort.abort(), 3000)
+        let upstream
+        try {
+          upstream = await fetch(`${wheelBase}/${wheelApiMatch[1]}`, {
+            method: req.method,
+            headers: req.method === 'GET' || req.method === 'HEAD' ? {} : { 'Content-Type': 'application/json' },
+            body: req.method === 'GET' || req.method === 'HEAD' ? undefined : Buffer.concat(chunks).toString('utf8') || '{}',
+            signal: abort.signal,
+          })
+        }
+        finally { clearTimeout(abortTimer) }
+        const text = await upstream.text()
+        res.writeHead(upstream.status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' })
+        res.end(text)
+      }
+      catch (error) {
+        sendJson(res, 502, { error: `台架服务不可达: ${error.message}` })
+      }
+      return
+    }
     // /reveal 必须正向重定向到 /reveal/：目录下脚本均为相对路径引用（vendor/...），
     // 无尾斜杠时会被解析到站点根 /vendor/... 404，整页瘫痪
     if (pathname === '/reveal') {
