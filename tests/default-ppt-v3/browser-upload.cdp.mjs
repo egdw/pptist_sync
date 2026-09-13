@@ -13,7 +13,7 @@ import WebSocket from 'ws'
 
 const PORT = Number(process.argv[2] || 8686)
 const CDP_PORT = 19222
-const FILE = 'D:/智证修改版.pptx'
+const FILE = process.env.PPTX_FILE || 'D:/智证修改版.pptx'
 
 if (!fs.existsSync(FILE)) { console.error('测试文件不存在:', FILE); process.exit(1) }
 
