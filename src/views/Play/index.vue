@@ -14,7 +14,7 @@
         :changeViewMode="changeViewMode"
         keepPlayingOnFullscreenEsc
       />
-      <ShowFlowRuntime v-if="showFlowStore.flow.enabled" />
+      <ShowFlowRuntime v-if="showFlowStore.linkedScreening && showFlowStore.flow.enabled" />
     </template>
 
     <!-- 尚无默认 PPT：显示引导并持续等待，首次上传成功后自动进入放映 -->
@@ -208,7 +208,11 @@ watch(screening, value => {
   else if (phase.value === 'playing') phase.value = 'stopped'
 })
 watch(() => [phase.value, loadedSeq.value], () => {
-  if (phase.value === 'playing') void showFlowStore.startShow()
+  if (phase.value === 'playing') {
+    // /play 是专用播放页（部署自启大屏）：播放即联动会话（编排页按钮之外的合法入口）
+    showFlowStore.requestLinkedScreening()
+    void showFlowStore.startShow()
+  }
   else showFlowStore.stopShow()
 }, { flush: 'post' })
 onUnmounted(() => showFlowStore.stopShow())

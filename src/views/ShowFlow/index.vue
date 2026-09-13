@@ -421,8 +421,11 @@ const renameStep = (stepId: string, label: string) => showFlowStore.renameStep(s
 const dismissReport = () => { lastReport.value = null }
 
 const { enterScreening } = useScreening()
-// 开始联动放映：先强制接管控制台（挤掉残留的其他窗口），再进入放映——省去手动点「接管控制台」
+// 开始联动放映：标记本次会话为联动（首页/编辑器的普通测试放映不受影响），
+// 自动开启总开关，强制接管控制台（挤掉残留的其他窗口）后进入放映
 const enterScreeningWithFlow = () => {
+  if (!showFlowStore.flow.enabled) showFlowStore.setEnabled(true)
+  showFlowStore.requestLinkedScreening()
   showFlowStore.takeoverController()
   enterScreening()
 }

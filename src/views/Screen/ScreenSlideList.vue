@@ -70,7 +70,7 @@ const bakedMark = computed(() => slidesWithTurningMode.value.map(s => (isBakedIm
 // 底图含 GIF 首帧，剥离覆盖层后视觉无损；普通放映保留原行为。
 const linkedHardCut = computed(() => {
   const showFlowStore = useShowFlowStore()
-  return showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
+  return showFlowStore.linkedScreening && showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
 })
 const renderedSlide = (index: number) => {
   const slide = slidesWithTurningMode.value[index]

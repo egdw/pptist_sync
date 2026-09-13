@@ -355,10 +355,16 @@ export const useShowFlowStore = defineStore('showFlow', () => {
   const initialized = { value: false }
   let bootstrapTask: Promise<void> | null = null
 
+  /** 本次放映会话是否为联动放映（运行时一次性标记，不持久化）：
+   *  只有编排页「开始联动放映」按钮会置位——首页/编辑器的普通测试放映
+   *  不拉起任何联动逻辑（无 WS 会话、无监控截图、无翻页接管/校验） */
+  const linkedScreening = ref(false)
+  const requestLinkedScreening = () => { linkedScreening.value = true }
+
   /** 多屏联动总开关：关闭时立即停止 Controller，放映恢复普通模式 */
   const setEnabled = (v: boolean) => {
     flow.value.enabled = v
-    if (!v) controller?.stop()
+    if (!v) { linkedScreening.value = false; controller?.stop() }
     save()
   }
 
@@ -470,7 +476,7 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     if (flow.value.steps.length) await controller.start(0)
   }
 
-  const stopShow = () => { showRequest++; controller?.stop() }
+  const stopShow = () => { showRequest++; linkedScreening.value = false; controller?.stop() }
 
   const next = () => controller?.next()
   const previous = () => controller?.previous()
@@ -664,6 +670,8 @@ export const useShowFlowStore = defineStore('showFlow', () => {
     wsConnected,
     lastReport,
     controllerReady,
+    linkedScreening,
+    requestLinkedScreening,
     init,
     setEnabled,
     save,

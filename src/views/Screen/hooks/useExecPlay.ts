@@ -172,13 +172,14 @@ export default () => {
     message.success(msg)
   }, 1000, { leading: true, trailing: false })
 
-  // 多屏联动接管：ShowFlow 启用且有编排步骤时，翻页不再是 PPT next()/prev()，
-  // 而是 ShowFlow.next()/previous()（虚拟步骤时间轴，唯一播放控制权）。
+  // 多屏联动接管：仅当本次会话由编排页「开始联动放映」发起（linkedScreening）
+  // 且方案开关开启时，翻页才走 ShowFlow.next()/previous()（虚拟步骤时间轴）；
+  // 首页/编辑器的普通测试放映不受任何联动逻辑影响。
   // 本机作为受控副屏（/secondary 页）时，完全忽略本机翻页，由控制器远程驱动。
   const showFlowTakeover = (): boolean | 'suppress' => {
     const showFlowStore = useShowFlowStore()
     if (showFlowStore.remoteControlled) return 'suppress'
-    return showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
+    return showFlowStore.linkedScreening && showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
   }
 
   // 向上/向下播放
