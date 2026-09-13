@@ -77,8 +77,12 @@ function runFfmpeg(cmd, args, timeoutMs = FFMPEG_TIMEOUT_MS) {
   })
 }
 
-export function createGifTranscoder({ assetsDir, thresholdMB = 24, assetUrlPrefix = '/default-ppt-api', log = () => {} }) {
+export function createGifTranscoder({ assetsDir, thresholdMB = 24, decodedCapMB = 128, assetUrlPrefix = '/default-ppt-api', log = () => {} }) {
   const thresholdBytes = Math.max(0, Number(thresholdMB) || 0) * 1024 * 1024
+  /** 解码后字节上限：Chromium 对动图有解码内存上限（实测 413MB 解码体量即只显首帧，
+   *  36MB 正常播放），且大体量动画本身也是驻留负担——超过即转码为视频，与文件大小无关
+   *  （一个 0.9MB 的 368 帧 GIF 解码后同样高达 1.5GB）。 */
+  const decodedCapBytes = Math.max(1, Number(decodedCapMB) || 128) * 1024 * 1024
   /** 资产名 → 转码结果 memo（同稿多元素复用同一 GIF） */
   const memo = new Map()
   let queue = Promise.resolve()
@@ -121,7 +125,12 @@ export function createGifTranscoder({ assetsDir, thresholdMB = 24, assetUrlPrefi
   async function transcodeOne(assetName) {
     const gifPath = path.join(assetsDir, assetName)
     const stat = await fsp.stat(gifPath)
-    if (stat.size <= thresholdBytes) return null
+    if (stat.size <= thresholdBytes) {
+      // 文件不大也可能解码体量巨大（帧数多/分辨率高），同样需要转码
+      const decoded = await estimateDecodedBytes(gifPath)
+      if (decoded <= decodedCapBytes) return null
+      log(`[gif-transcode] ${assetName.slice(0, 12)} 文件仅 ${(stat.size / 1e6).toFixed(1)}MB 但解码体量 ${(decoded / 1048576).toFixed(0)}MB 超限，转码为视频`)
+    }
     const workDir = path.join(assetsDir, `.transcode-${crypto.randomUUID().slice(0, 8)}`)
     await fsp.mkdir(workDir, { recursive: true })
     try {
@@ -147,6 +156,37 @@ export function createGifTranscoder({ assetsDir, thresholdMB = 24, assetUrlPrefi
     finally {
       await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {})
     }
+  }
+
+  /** 解析 GIF 画布尺寸与帧数（只扫块结构不解码像素），估算解码后体量。
+   *  服务端瞬时读入整文件（≤转码阈值量级，读完即释放）；块结构扫描逻辑
+   *  与诊断脚本同源，已对全部真实素材验证帧数正确。 */
+  async function estimateDecodedBytes(gifPath) {
+    try {
+      const buf = await fsp.readFile(gifPath)
+      if (buf.subarray(0, 3).toString('latin1') !== 'GIF') return 0
+      const width = buf.readUInt16LE(6)
+      const height = buf.readUInt16LE(8)
+      let i = 13
+      if (buf[10] & 0x80) i += 3 * (2 ** ((buf[10] & 7) + 1))
+      let frames = 0
+      while (i < buf.length) {
+        const b = buf[i]
+        if (b === 0x3b) break
+        if (b === 0x21) { i += 2; while (i < buf.length && buf[i] !== 0) i += buf[i] + 1; i++ }
+        else if (b === 0x2c) {
+          frames++
+          const hasLct = buf[i + 9] & 0x80
+          i += 10 + (hasLct ? 3 * (2 ** ((buf[i + 9] & 7) + 1)) : 0)
+          i++ // LZW 最小码长
+          while (i < buf.length && buf[i] !== 0) i += buf[i] + 1
+          i++
+        }
+        else break
+      }
+      return frames * width * height * 4
+    }
+    catch { return 0 }
   }
 
   /**

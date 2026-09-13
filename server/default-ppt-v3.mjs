@@ -105,6 +105,10 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
     }
     await sweepStaleSessions()
     await gcAssets()
+    // 启动自愈：对当前版本跑一遍 GIF→视频升级（阈值调整/旧规则上传的存量文稿
+    // 无需重新上传即可获得转码；无变化时不触发重发布）
+    const current = store.getCurrent()
+    if (gifTranscoder && current?.version) scheduleGifUpgrade(current.version)
     // 定时清扫：崩溃遗留会话 + 孤儿资产（存储有界，不随上传次数无限增长）
     setInterval(() => { void sweepStaleSessions().then(() => gcAssets()) }, 60 * 60 * 1000).unref()
   }

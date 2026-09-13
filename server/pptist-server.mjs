@@ -519,9 +519,12 @@ const secondaryDocStore = createDocStore({ dataDir: SECONDARY_DATA_DIR, label: '
 // 主屏 v3 资源化扩展（资产池 + 会话上传 + 版本化 bundle）；副屏不受影响
 // 超大 GIF → 视频转码（PPTIST_GIF_VIDEO_MB 阈值，默认 24MB；0 = 关闭）。找不到 ffmpeg 时自动禁用。
 const GIF_VIDEO_THRESHOLD_MB = Math.max(0, Number(process.env.PPTIST_GIF_VIDEO_MB ?? 24))
+// 解码体量上限（帧数×分辨率×4B）：Chromium 动图解码内存约 256MB 量级，超限只显首帧
+const GIF_DECODED_CAP_MB = Math.max(1, Number(process.env.PPTIST_GIF_DECODED_MB ?? 128))
 const gifTranscoder = createGifTranscoder({
   assetsDir: path.join(DATA_DIR, 'assets'),
   thresholdMB: GIF_VIDEO_THRESHOLD_MB,
+  decodedCapMB: GIF_DECODED_CAP_MB,
   log,
 })
 const defaultPptV3 = createDefaultPptV3({ store: mainDocStore, dataDir: DATA_DIR, maxUploadBytes: MAX_UPLOAD_MB * 1024 * 1024, log, gifTranscoder })
@@ -529,6 +532,7 @@ const defaultPptV3 = createDefaultPptV3({ store: mainDocStore, dataDir: DATA_DIR
 const secondaryGifTranscoder = createGifTranscoder({
   assetsDir: path.join(SECONDARY_DATA_DIR, 'assets'),
   thresholdMB: GIF_VIDEO_THRESHOLD_MB,
+  decodedCapMB: GIF_DECODED_CAP_MB,
   assetUrlPrefix: '/showflow-api/secondary-doc',
   log,
 })
