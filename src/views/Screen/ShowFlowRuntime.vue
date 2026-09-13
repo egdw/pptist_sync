@@ -46,23 +46,34 @@ onUnmounted(() => {
 // 大 GIF（实测单页最大 134MB，解码驻留 +500MB+）循环播放是空闲卡死的
 // 主要内存压力；v3 页面底图已烘焙 GIF 首帧，驻留时隐藏覆盖层视觉无损，
 // 任意键鼠操作立即恢复动图。
+// 视频（GIF 转码产物）在 display:none 下 Chromium 仍继续解码——RK3588
+// 硬解一小时即耗尽 MPP 会话（实测整机冻结），故驻留时必须显式 pause()。
 const GIF_PARK_IDLE_MS = 5 * 60 * 1000
 let lastActivityAt = Date.now()
 const activityEvents = ['keydown', 'pointerdown', 'mousemove', 'wheel'] as const
+const setParked = (on: boolean) => {
+  document.documentElement.classList.toggle('gif-parked', on)
+  document.querySelectorAll<HTMLVideoElement>('.slide-content video').forEach(video => {
+    if (on) video.pause()
+    else void video.play().catch(() => { /* autoplay 受限时忽略 */ })
+  })
+}
 const markActivity = () => {
+  if (document.documentElement.classList.contains('gif-parked')) setParked(false)
   lastActivityAt = Date.now()
-  document.documentElement.classList.remove('gif-parked')
 }
 let parkTimer = 0
 onMounted(() => {
   for (const type of activityEvents) window.addEventListener(type, markActivity, { passive: true })
   parkTimer = window.setInterval(() => {
-    if (Date.now() - lastActivityAt >= GIF_PARK_IDLE_MS) document.documentElement.classList.add('gif-parked')
+    if (Date.now() - lastActivityAt >= GIF_PARK_IDLE_MS && !document.documentElement.classList.contains('gif-parked')) setParked(true)
   }, 10_000)
 })
 onUnmounted(() => {
   for (const type of activityEvents) window.removeEventListener(type, markActivity)
   if (parkTimer) clearInterval(parkTimer)
-  document.documentElement.classList.remove('gif-parked')
+  setParked(false)
 })
+// 联动跳页也是活动：翻到新页必须恢复播放（否则新页视频带着 parked 状态不播）
+watch(() => useSlidesStore().slideIndex, markActivity)
 </script>

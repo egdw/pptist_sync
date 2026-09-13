@@ -151,20 +151,29 @@ const navigate = async (pageId: string) => {
 // ---- 空闲驻留：长时间无导航时停播 GIF，防止长驻页面拖垮放映机 ----
 // 副屏无人操作是常态，按「最近一次导航/同步」计时；v3 底图已烘焙 GIF
 // 首帧，驻留时隐藏覆盖层视觉无损，收到新导航立即恢复。
+// 视频（GIF 转码产物）在 display:none 下 Chromium 仍继续解码——
+// 驻留时必须显式 pause()，否则解码永不停歇（RK3588 实测冻结根源之一）。
 let lastNavigateAt = Date.now()
 let parkTimer = 0
+const setParked = (on: boolean) => {
+  document.documentElement.classList.toggle('gif-parked', on)
+  document.querySelectorAll<HTMLVideoElement>('.slide-content video').forEach(video => {
+    if (on) video.pause()
+    else void video.play().catch(() => { /* autoplay 受限时忽略 */ })
+  })
+}
 const markNavigateActivity = () => {
+  if (document.documentElement.classList.contains('gif-parked')) setParked(false)
   lastNavigateAt = Date.now()
-  document.documentElement.classList.remove('gif-parked')
 }
 onMounted(() => {
   parkTimer = window.setInterval(() => {
-    if (Date.now() - lastNavigateAt >= 5 * 60 * 1000) document.documentElement.classList.add('gif-parked')
+    if (Date.now() - lastNavigateAt >= 5 * 60 * 1000 && !document.documentElement.classList.contains('gif-parked')) setParked(true)
   }, 10_000)
 })
 onUnmounted(() => {
   if (parkTimer) clearInterval(parkTimer)
-  document.documentElement.classList.remove('gif-parked')
+  setParked(false)
 })
 let captureTimer = 0
 
