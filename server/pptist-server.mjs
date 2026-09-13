@@ -507,12 +507,28 @@ const mainDocStore = createDocStore({ dataDir: DATA_DIR, label: '主屏文稿' }
 const secondaryDocStore = createDocStore({ dataDir: SECONDARY_DATA_DIR, label: '副屏文稿(PPTist B)', deduplicateRaw: true })
 // 主屏 v3 资源化扩展（资产池 + 会话上传 + 版本化 bundle）；副屏不受影响
 // 超大 GIF → 视频转码（PPTIST_GIF_VIDEO_MB 阈值，默认 24MB；0 = 关闭）。找不到 ffmpeg 时自动禁用。
+const GIF_VIDEO_THRESHOLD_MB = Math.max(0, Number(process.env.PPTIST_GIF_VIDEO_MB ?? 24))
 const gifTranscoder = createGifTranscoder({
   assetsDir: path.join(DATA_DIR, 'assets'),
-  thresholdMB: Math.max(0, Number(process.env.PPTIST_GIF_VIDEO_MB ?? 24)),
+  thresholdMB: GIF_VIDEO_THRESHOLD_MB,
   log,
 })
 const defaultPptV3 = createDefaultPptV3({ store: mainDocStore, dataDir: DATA_DIR, maxUploadBytes: MAX_UPLOAD_MB * 1024 * 1024, log, gifTranscoder })
+// 副屏 PPTist B 与主屏同管线（v3 资源化上传 + GIF 转码），独立数据目录与路由前缀
+const secondaryGifTranscoder = createGifTranscoder({
+  assetsDir: path.join(SECONDARY_DATA_DIR, 'assets'),
+  thresholdMB: GIF_VIDEO_THRESHOLD_MB,
+  assetUrlPrefix: '/showflow-api/secondary-doc',
+  log,
+})
+const secondaryPptV3 = createDefaultPptV3({
+  store: secondaryDocStore,
+  dataDir: SECONDARY_DATA_DIR,
+  maxUploadBytes: MAX_UPLOAD_MB * 1024 * 1024,
+  log,
+  gifTranscoder: secondaryGifTranscoder,
+  prefix: '/showflow-api/secondary-doc',
+})
 
 /** 读取原始请求体：优先按 Content-Length 一次性预分配（大文件上传避免双倍内存），超限立即断开 */
 function readRawBody(req, maxBytes) {
@@ -959,6 +975,9 @@ const server = http.createServer(async (req, res) => {
         secondaryDocStore.serveEvents(res)
         return
       }
+      // 副屏 v3 资源化上传（与主屏同管线：会话/资产/raw/bundle/commit + GIF→视频转码），
+      // 须在旧信封路由之前匹配
+      if (await secondaryPptV3.handle(req, res, url)) return
       if (req.method === 'POST' && pathname === '/showflow-api/secondary-doc/upload') {
         await secondaryDocStore.handleUpload(req, res)
         return
@@ -1074,6 +1093,7 @@ const server = http.createServer(async (req, res) => {
 await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init(), monitorService.init()])
 // ensureDirs 会清空 tmp/（含 v3 会话目录），v3 初始化必须在其后重建
 await defaultPptV3.init()
+await secondaryPptV3.init()
 try { monitorPublisher.applyConfig(JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8'))) } catch { /* 尚未配置 MQTT */ }
 await Promise.all([mainDocStore.loadCurrent(), secondaryDocStore.loadCurrent()])
 const showFlowWs = attachShowFlowWs(server, log)

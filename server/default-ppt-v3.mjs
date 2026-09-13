@@ -85,7 +85,7 @@ function streamBodyToFile(req, filePath, maxBytes) {
 
 const settle = (tmp, dest) => fsp.rename(tmp, dest)
 
-export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTranscoder }) {
+export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTranscoder, prefix = '/default-ppt-api' }) {
   const assetsDir = path.join(dataDir, 'assets')
   const sessionsDir = path.join(dataDir, 'tmp', 'sessions')
 
@@ -139,7 +139,7 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
     const route = url.pathname
     try {
       // ---- 全局资产池（内容寻址，不可变） ----
-      const assetMatch = route.match(/^\/default-ppt-api\/assets\/([^/]+)$/)
+      const assetMatch = route.match(new RegExp(`^${prefix}/assets/([^/]+)$`))
       if (assetMatch && (req.method === 'GET' || req.method === 'HEAD')) {
         const name = decodeURIComponent(assetMatch[1])
         if (!ASSET_RE.test(name)) { sendJson(res, 400, { error: '非法资产名' }); return true }
@@ -149,7 +149,7 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
       }
 
       // ---- 版本固定 bundle（不可变） ----
-      const bundleMatch = route.match(/^\/default-ppt-api\/versions\/(v\d+)\/bundle\.json$/)
+      const bundleMatch = route.match(new RegExp(`^${prefix}/versions/(v\\d+)/bundle\\.json$`))
       if (bundleMatch && (req.method === 'GET' || req.method === 'HEAD')) {
         const version = bundleMatch[1]
         if (!VERSION_RE.test(version)) { sendJson(res, 400, { error: '非法版本号' }); return true }
@@ -158,7 +158,7 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
       }
 
       // ---- 上传会话 ----
-      const sessionMatch = route.match(/^\/default-ppt-api\/upload-sessions(?:\/([a-f0-9-]{16,40}))?(\/.*)?$/)
+      const sessionMatch = route.match(new RegExp(`^${prefix}/upload-sessions(?:/([a-f0-9-]{16,40}))?(/.*)?$`))
       if (!sessionMatch) return false
       const sessionId = sessionMatch[1]
       const sub = sessionMatch[2] || ''
@@ -238,7 +238,7 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
         const collectSrc = value => {
           if (!value) return
           if (typeof value === 'string') {
-            if (value.startsWith('/default-ppt-api/assets/')) referenced.add(decodeURIComponent(value.split('/').pop()))
+            if (value.startsWith(`${prefix}/assets/`)) referenced.add(decodeURIComponent(value.split('/').pop()))
             else if (value.startsWith('data:')) throw fail(400, 'bundle 中不允许残留 data: 内嵌资源')
             else if (value.startsWith('blob:')) throw fail(400, 'bundle 中不允许残留 blob: 引用')
           }

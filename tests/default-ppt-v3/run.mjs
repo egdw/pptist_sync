@@ -61,16 +61,16 @@ function spawnSyncOut(cmd, argv) {
 
 async function jsonOf(r) { return r.json().catch(() => null) }
 
-async function fullUpload({ filename, assets, slidesSkeleton, rawSource, rawName }) {
-  const created = await fetch(`${BASE}/default-ppt-api/upload-sessions`, { method: 'POST' })
+async function fullUpload({ filename, assets, slidesSkeleton, rawSource, rawName, apiBase = '/default-ppt-api' }) {
+  const created = await fetch(`${BASE}${apiBase}/upload-sessions`, { method: 'POST' })
   const { sessionId } = await jsonOf(created)
-  const sessionUrl = `${BASE}/default-ppt-api/upload-sessions/${sessionId}`
+  const sessionUrl = `${BASE}${apiBase}/upload-sessions/${sessionId}`
   const srcMap = new Map()
   for (const a of assets) {
     const put = await fetch(`${sessionUrl}/assets`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Asset-Ext': a.ext }, body: a.data })
     const result = await jsonOf(put)
     if (!put.ok) throw new Error(`asset put ${put.status}: ${JSON.stringify(result)}`)
-    srcMap.set(a.key, `/default-ppt-api/assets/${result.name}`)
+    srcMap.set(a.key, `${apiBase}/assets/${result.name}`)
     a.deduped = !!result.deduped
   }
   const slides = slidesSkeleton(srcMap)
@@ -176,6 +176,23 @@ async function main() {
   await startServer()
   const after = await (await fetch(`${BASE}/default-ppt-api/current/slides`)).json()
   ok(after.slides?.length >= 1, '重启后 current/bundle 持久化恢复')
+
+  // ---- 6. 副屏 PPTist B 与主屏同管线（v3 会话/资产/commit/播放端 slides） ----
+  const sec = await fullUpload({
+    filename: '副屏.pptx', rawName: 'sec',
+    assets: [{ key: 'i', ext: 'png', data: Buffer.concat([PNG_1x1, Buffer.from([9])]) }],
+    slidesSkeleton: src => [{ id: 'sec-s', elements: [{ type: 'image', id: 'e', src: src.get('i') }] }],
+    rawSource: PNG_1x1,
+    apiBase: '/showflow-api/secondary-doc',
+  })
+  ok(sec.commitResult.exists === true && sec.commitResult.version === 'v1', '副屏 v3 commit 发布 v1')
+  const secSlidesRes = await fetch(`${BASE}/showflow-api/secondary-doc/current/slides`)
+  const secSlides = await secSlidesRes.json()
+  ok(secSlidesRes.status === 200 && secSlides.slides?.[0]?.elements?.[0]?.src?.startsWith('/showflow-api/secondary-doc/assets/'), '副屏 /current/slides 输出 v3 bundle（资产前缀正确）')
+  const secAsset = await fetch(`${BASE}${sec.slides[0].elements[0].src}`)
+  ok(secAsset.ok && secAsset.headers.get('cache-control')?.includes('immutable'), '副屏资产池 immutable 提供')
+  const secVersioned = await fetch(`${BASE}/showflow-api/secondary-doc/versions/v1/bundle.json`)
+  ok(secVersioned.ok, '副屏版本化 bundle 路由可用')
 
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`)
   await stopServer()

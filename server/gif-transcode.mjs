@@ -77,7 +77,7 @@ function runFfmpeg(cmd, args, timeoutMs = FFMPEG_TIMEOUT_MS) {
   })
 }
 
-export function createGifTranscoder({ assetsDir, thresholdMB = 24, log = () => {} }) {
+export function createGifTranscoder({ assetsDir, thresholdMB = 24, assetUrlPrefix = '/default-ppt-api', log = () => {} }) {
   const thresholdBytes = Math.max(0, Number(thresholdMB) || 0) * 1024 * 1024
   /** 资产名 → 转码结果 memo（同稿多元素复用同一 GIF） */
   const memo = new Map()
@@ -161,7 +161,7 @@ export function createGifTranscoder({ assetsDir, thresholdMB = 24, log = () => {
       for (let i = 0; i < slide.elements.length; i++) {
         const el = slide.elements[i]
         if (el?.type !== 'image' || typeof el.src !== 'string') continue
-        const assetName = el.src.startsWith('/default-ppt-api/assets/') ? decodeURIComponent(el.src.split('/').pop()) : ''
+        const assetName = el.src.startsWith(`${assetUrlPrefix}/assets/`) ? decodeURIComponent(el.src.split('/').pop()) : ''
         if (!assetName.endsWith('.gif')) continue
         if (!memo.has(assetName)) {
           const result = await transcodeOne(assetName).catch(error => {
@@ -175,11 +175,11 @@ export function createGifTranscoder({ assetsDir, thresholdMB = 24, log = () => {
         slide.elements[i] = {
           ...el,
           type: 'video',
-          src: `/default-ppt-api/assets/${result.videoAsset}`,
+          src: `${assetUrlPrefix}/assets/${result.videoAsset}`,
           autoplay: true,
           loop: true,
           muted: true,
-          ...(result.posterAsset ? { poster: `/default-ppt-api/assets/${result.posterAsset}` } : {}),
+          ...(result.posterAsset ? { poster: `${assetUrlPrefix}/assets/${result.posterAsset}` } : {}),
         }
         changed = true
       }

@@ -121,7 +121,6 @@ import {
   fetchSecondaryDocCurrent,
   subscribeDefaultPptEvents,
   subscribeSecondaryDocEvents,
-  uploadDefaultPpt,
   type DefaultPptBundle,
   type DefaultPptConfig,
   type DefaultPptMeta,
@@ -156,7 +155,6 @@ const successText = ref('')
 const progressPercent = ref(0)
 const dragging = ref(false)
 // 解析产物：按页分片的 bundle BlobPart（避免超大 JSON 字符串）与页数
-const parsedBundleParts = ref<BlobPart[] | null>(null)
 const parsedPageCount = ref(0)
 // 主屏 v3 解析产物：轻结构快照（src 为 blob: URL），上传阶段逐资产化
 const parsedV3 = ref<{
@@ -215,24 +213,11 @@ const validateFile = (file: File): string | null => {
 
 const resetParseState = () => {
   parsed.value = false
-  parsedBundleParts.value = null
   parsedV3.value = null
   parsedPageCount.value = 0
   errorText.value = ''
   successText.value = ''
   progressPercent.value = 0
-}
-
-/** 按页分片序列化 bundle：避免为整个文稿生成超大 JSON 字符串（支持大文件上传） */
-const buildBundleParts = (bundle: DefaultPptBundle): BlobPart[] => {
-  const parts: BlobPart[] = [
-    `{"title":${JSON.stringify(bundle.title || '')},"theme":${JSON.stringify(bundle.theme || {})},"viewportSize":${bundle.viewportSize || 1000},"viewportRatio":${bundle.viewportRatio || 0.5625},"slides":[`,
-  ]
-  bundle.slides.forEach((slide, index) => {
-    parts.push((index > 0 ? ',' : '') + JSON.stringify(slide))
-  })
-  parts.push(']}')
-  return parts
 }
 
 /** PDF：pdf.js 逐页渲染为图片页（每页背景图铺满），页面文字提取到演讲者备注。
@@ -319,19 +304,14 @@ const handleFile = async (file: File) => {
   if (isPdf(file)) {
     statusText.value = '解析中 ...'
     try {
-      const bundle = await parsePdf(file, { blobSrc: uploadTarget.value === 'main' })
-      if (uploadTarget.value === 'main') {
-        // v3：保留 blob URL 引用结构，上传时逐资产化，不在解析阶段生成巨型 JSON
-        parsedV3.value = {
-          slides: bundle.slides,
-          theme: bundle.theme || {},
-          viewportSize: bundle.viewportSize,
-          viewportRatio: bundle.viewportRatio,
-          title: bundle.title,
-        }
-      }
-      else {
-        parsedBundleParts.value = buildBundleParts(bundle)
+      // v3：blob 引用结构（主/副屏同管线），上传时逐资产化，不在解析阶段生成巨型 JSON
+      const bundle = await parsePdf(file, { blobSrc: true })
+      parsedV3.value = {
+        slides: bundle.slides,
+        theme: bundle.theme || {},
+        viewportSize: bundle.viewportSize,
+        viewportRatio: bundle.viewportRatio,
+        title: bundle.title,
       }
       parsedPageCount.value = bundle.slides.length
       parsed.value = true
@@ -352,8 +332,8 @@ const handleFile = async (file: File) => {
   seedSlideId = nanoid(10)
   slidesStore.setSlides([{ id: seedSlideId, elements: [] }])
   slidesStore.updateSlideIndex(0)
-  // 主屏走 v3 资源化：blob 模式解析（图片为 objectURL，避免整份 base64 字符串）
-  importPPTXFile([file], { imageMode: uploadTarget.value === 'main' ? 'blob' : 'base64' })
+  // 主/副屏同管线：blob 模式解析（图片为 objectURL，避免整份 base64 字符串）
+  importPPTXFile([file], { imageMode: 'blob' })
 }
 
 const handleFileChange = (e: Event) => {
@@ -385,40 +365,30 @@ watch(exporting, value => {
     parsed.value = false
     return
   }
-  if (uploadTarget.value === 'main') {
-    // v3：结构快照（src 为短 blob: URL 字符串，体积小），上传阶段逐资产化
-    parsedV3.value = {
-      slides: JSON.parse(JSON.stringify(resultSlides)),
-      theme: slidesStore.theme,
-      viewportSize: slidesStore.viewportSize,
-      viewportRatio: slidesStore.viewportRatio,
-      title: slidesStore.title,
-    }
-  }
-  else {
-    parsedBundleParts.value = buildBundleParts({
-      title: slidesStore.title,
-      slides: resultSlides,
-      theme: slidesStore.theme,
-      viewportSize: slidesStore.viewportSize,
-      viewportRatio: slidesStore.viewportRatio,
-    })
+  // v3：结构快照（src 为短 blob: URL 字符串，体积小），上传阶段逐资产化（主/副屏同管线）
+  parsedV3.value = {
+    slides: JSON.parse(JSON.stringify(resultSlides)),
+    theme: slidesStore.theme,
+    viewportSize: slidesStore.viewportSize,
+    viewportRatio: slidesStore.viewportRatio,
+    title: slidesStore.title,
   }
   parsedPageCount.value = resultSlides.length
   parsed.value = true
   statusText.value = `解析成功：共 ${resultSlides.length} 页，可以上传`
 })
 
-/** 主屏 v3 上传：逐页渲染为整页图片资产，GIF 图片保留为动图覆盖层 */
+/** v3 资源化上传（主/副屏同管线）：逐页渲染为整页图片资产，GIF 图片保留为动图覆盖层 */
 const API = '/default-ppt-api'
+const SECONDARY_API = '/showflow-api/secondary-doc'
 const pagesCount = computed(() => parsedV3.value?.slides.length || parsedPageCount.value)
 
-const prepareMainDeckV3 = async (sessionId: string) => {
+const prepareMainDeckV3 = async (sessionId: string, apiBase: string) => {
   const v3 = parsedV3.value
   if (!v3) throw new Error('解析数据缺失')
   const viewportSize = v3.viewportSize || slidesStore.viewportSize
   const viewportRatio = v3.viewportRatio || slidesStore.viewportRatio
-  const sessionUrl = `${API}/upload-sessions/${sessionId}`
+  const sessionUrl = `${apiBase}/upload-sessions/${sessionId}`
   const total = v3.slides.length
 
   // 跨页面共享去重：同一图片（同一 blob URL）可能被多个元素/多页复用，
@@ -477,7 +447,7 @@ const prepareMainDeckV3 = async (sessionId: string) => {
           body: blob,
         })
         if (!gifPut.ok) throw new Error(`GIF 上传失败（${gifPut.status}）`)
-        assetUrl = `${API}/assets/${(await gifPut.json()).name}`
+        assetUrl = `${apiBase}/assets/${(await gifPut.json()).name}`
         gifAssetByUrl.set(el.src, assetUrl)
       }
       overlays.push({ ...el, src: assetUrl })
@@ -485,7 +455,7 @@ const prepareMainDeckV3 = async (sessionId: string) => {
 
     // 页面重写为「整页底图 + GIF 覆盖层」——标准 Slide 结构，播放端零改动
     slide.elements = overlays
-    slide.background = { type: 'image', image: { src: `${API}/assets/${pageAsset}`, size: 'cover' } }
+    slide.background = { type: 'image', image: { src: `${apiBase}/assets/${pageAsset}`, size: 'cover' } }
     progressPercent.value = Math.round(((i + 1) / total) * 70)
   }
 
@@ -494,69 +464,62 @@ const prepareMainDeckV3 = async (sessionId: string) => {
 
 const upload = async () => {
   if (!selectedFile.value || !parsed.value || uploading.value) return
-  if (uploadTarget.value === 'main' && !parsedV3.value) return
-  if (uploadTarget.value === 'secondary' && !parsedBundleParts.value) return
+  if (!parsedV3.value) return
   uploading.value = true
   errorText.value = ''
   successText.value = ''
   progressPercent.value = 0
 
   try {
-    if (uploadTarget.value === 'main') {
-      const v3 = parsedV3.value!
-      // 1. 会话
-      const session = await (await fetch(`${API}/upload-sessions`, { method: 'POST' })).json()
-      const sessionUrl = `${API}/upload-sessions/${session.sessionId}`
-      // 2. 逐页渲染整页图片 + 剥离 GIF 覆盖层，页面图/资产逐个直传（slides 原地重写）
-      await prepareMainDeckV3(session.sessionId)
-      // 3. 原始文件流式上传
-      statusText.value = `上传原始文件 ...`
-      progressPercent.value = 72
-      const rawPut = await fetch(`${sessionUrl}/raw`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: selectedFile.value,
-      })
-      if (!rawPut.ok) throw new Error(`原始文件上传失败（${rawPut.status}）`)
-      // 4. 轻结构 bundle：与播放端协议一致（slides 数组），每页=整页底图+GIF覆盖层
-      statusText.value = '上传文稿结构 ...'
-      progressPercent.value = 94
-      const bundle = {
-        title: v3.title || slidesStore.title,
-        slides: v3.slides,
-        theme: v3.theme,
-        viewportSize: v3.viewportSize,
-        viewportRatio: v3.viewportRatio,
-      }
-      const bundlePut = await fetch(`${sessionUrl}/bundle`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bundle),
-      })
-      if (!bundlePut.ok) throw new Error(`文稿数据上传失败（${bundlePut.status}）`)
-      // 5. 原子发布
-      progressPercent.value = 99
-      statusText.value = '发布新版本 ...'
-      const commit = await fetch(`${sessionUrl}/commit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: selectedFile.value.name, pageCount: pagesCount.value || v3.slides.length }),
-      })
-      const result = await commit.json().catch(() => null)
-      if (!commit.ok || !result?.ok) throw new Error(result?.error || `发布失败（${commit.status}）`)
+    // 主/副屏同一条 v3 管线，仅 API 基址与提示语不同
+    const isMain = uploadTarget.value === 'main'
+    const apiBase = isMain ? API : SECONDARY_API
+    const v3 = parsedV3.value!
+    // 1. 会话
+    const session = await (await fetch(`${apiBase}/upload-sessions`, { method: 'POST' })).json()
+    const sessionUrl = `${apiBase}/upload-sessions/${session.sessionId}`
+    // 2. 逐页渲染整页图片 + 剥离 GIF 覆盖层，页面图/资产逐个直传（slides 原地重写）
+    await prepareMainDeckV3(session.sessionId, apiBase)
+    // 3. 原始文件流式上传
+    statusText.value = `上传原始文件 ...`
+    progressPercent.value = 72
+    const rawPut = await fetch(`${sessionUrl}/raw`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: selectedFile.value,
+    })
+    if (!rawPut.ok) throw new Error(`原始文件上传失败（${rawPut.status}）`)
+    // 4. 轻结构 bundle：与播放端协议一致（slides 数组），每页=整页底图+GIF覆盖层
+    statusText.value = '上传文稿结构 ...'
+    progressPercent.value = 94
+    const bundle = {
+      title: v3.title || slidesStore.title,
+      slides: v3.slides,
+      theme: v3.theme,
+      viewportSize: v3.viewportSize,
+      viewportRatio: v3.viewportRatio,
+    }
+    const bundlePut = await fetch(`${sessionUrl}/bundle`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bundle),
+    })
+    if (!bundlePut.ok) throw new Error(`文稿数据上传失败（${bundlePut.status}）`)
+    // 5. 原子发布
+    progressPercent.value = 99
+    statusText.value = '发布新版本 ...'
+    const commit = await fetch(`${sessionUrl}/commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: selectedFile.value.name, pageCount: pagesCount.value || v3.slides.length }),
+    })
+    const result = await commit.json().catch(() => null)
+    if (!commit.ok || !result?.ok) throw new Error(result?.error || `发布失败（${commit.status}）`)
+    if (isMain) {
       successText.value = '已设为默认 PPT，更新通知已发送。播放页面加载完成后将自动切换。'
-      const meta = await fetchDefaultPptCurrent()
-      currentMeta.value = meta
+      currentMeta.value = await fetchDefaultPptCurrent()
     }
     else {
-      progressPercent.value = 100
-      statusText.value = '保存中 ...'
-      const result = await uploadDefaultPpt({
-        filename: selectedFile.value.name,
-        file: selectedFile.value,
-        pageCount: parsedPageCount.value,
-        bundleParts: parsedBundleParts.value!,
-      }, percent => (progressPercent.value = percent), uploadTarget.value)
       successText.value = '已设为副屏文稿（PPTist B），副屏页加载完成后将自动切换。'
       secondaryMeta.value = result
     }
