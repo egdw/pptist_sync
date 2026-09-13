@@ -73,6 +73,11 @@ const studioService = createStudioService({ rootDir: ROOT, revealDir: REVEAL_DIR
 const MONITOR_MQTT_TOPIC = process.env.PPTIST_MONITOR_MQTT_TOPIC || 'presentation/led/display'
 const monitorService = createMonitorService({ cacheDir: path.join(ROOT, 'data', 'monitor') })
 const monitorPublisher = createMonitorMqttPublisher({ topic: MONITOR_MQTT_TOPIC, log })
+// 岗位 LCD 服务端发布器：渲染接口带 publish 标记时由服务端直接下发
+// （qos1+retain+失败重试），不再依赖操作窗口的浏览器 MQTT 连接。
+const ledPublishers = Object.fromEntries(['manager', 'platform', 'twin', 'hardware'].map(role => [
+  role, createMonitorMqttPublisher({ topic: `presentation/led/${role}/display`, log }),
+]))
 let showFlowStateWriteChain = Promise.resolve()
 let getShowFlowWsStatus = () => ({ totalConnections: 0, checkedAt: Date.now(), roles: {} })
 
@@ -764,6 +769,7 @@ const server = http.createServer(async (req, res) => {
         await fsp.mkdir(path.dirname(PRESENTATION_LINK_CONFIG_FILE), { recursive: true })
         await atomicWrite(PRESENTATION_LINK_CONFIG_FILE, JSON.stringify(body.config, null, 2))
         monitorPublisher.applyConfig(body.config)
+        for (const p of Object.values(ledPublishers)) p.applyConfig(body.config)
         sendJson(res, 200, { ok: true }); return
       }
       sendJson(res, 405, { error: 'Method Not Allowed' }); return
@@ -843,7 +849,26 @@ const server = http.createServer(async (req, res) => {
         return
       }
       const origin = `${req.socket.encrypted ? 'https' : 'http'}://${req.headers.host || `localhost:${PORT}`}`
-      sendJson(res, 200, await ledRenderService.render(body.state, origin, body.theme || await studioService.activeLcdConfig()))
+      const theme = body.theme || await studioService.activeLcdConfig()
+      const result = await ledRenderService.render(body.state, origin, theme)
+      // 服务端代发布：浏览器/板端无需依赖操作窗口的 MQTT 连接。
+      // 三态: true=已送达; 'queued'=MQTT 已配置但暂时掉线(发布器排队重试,
+      // 已验证 broker 恢复后补偿送达); false=服务端未配置 MQTT(浏览器兜底)
+      let published = false
+      if (body.publish === true) {
+        const statuses = Object.values(ledPublishers).map(p => p.status())
+        const mqttConfigured = statuses.some(st => st.configured)
+        for (const screen of result.screens) {
+          ledPublishers[screen.role]?.publish({
+            protocol: 'led-display/1.0', type: 'display',
+            msg_id: `led-${result.revision}-${screen.role}`,
+            revision: result.revision, role: screen.role,
+            image: { url: screen.url, format: screen.format, width: screen.width, height: screen.height, sha256: screen.sha256 },
+          })
+        }
+        published = statuses.some(st => st.connected) ? true : (mqttConfigured ? 'queued' : false)
+      }
+      sendJson(res, 200, { ...result, ...(body.publish === true ? { published } : {}) })
       return
     }
     const portraitMatch = pathname.match(/^\/led-render-api\/portrait\/(manager|platform|twin|hardware)$/)
@@ -920,6 +945,24 @@ const server = http.createServer(async (req, res) => {
       return
     }
     if (pathname.startsWith('/led/')) {
+      // 渲染产物为内容寻址文件名（相同画面同 URL），可安全 immutable——
+      // 板端重访/retain 重发相同画面时不再重复下载 ~100KB 图片
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const ledFile = path.join(LED_CACHE_DIR, pathname.replace(/^\/led/, '').replace(/\.\./g, ''))
+        const ledStat = await fsp.stat(ledFile).catch(() => null)
+        if (ledStat?.isFile()) {
+          res.writeHead(200, {
+            'Content-Type': 'image/jpeg',
+            'Content-Length': ledStat.size,
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            ETag: `"${path.basename(ledFile, '.jpg')}"`,
+            'X-Content-Type-Options': 'nosniff',
+          })
+          if (req.method === 'HEAD') { res.end(); return }
+          fs.createReadStream(ledFile).pipe(res)
+          return
+        }
+      }
       await serveStatic(req, res, pathname.replace(/^\/led/, '') || '/', LED_CACHE_DIR)
       return
     }
@@ -1114,7 +1157,11 @@ await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), st
 // 先加载 current（GC 依赖其判定资产引用），再初始化 v3 服务（含启动回收）
 await Promise.all([mainDocStore.loadCurrent(), secondaryDocStore.loadCurrent()])
 await Promise.all([defaultPptV3.init(), secondaryPptV3.init()])
-try { monitorPublisher.applyConfig(JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8'))) } catch { /* 尚未配置 MQTT */ }
+try {
+  const linkConfig = JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8'))
+  monitorPublisher.applyConfig(linkConfig)
+  for (const p of Object.values(ledPublishers)) p.applyConfig(linkConfig)
+} catch { /* 尚未配置 MQTT */ }
 const showFlowWs = attachShowFlowWs(server, log)
 getShowFlowWsStatus = showFlowWs.getStatus
 server.listen(PORT, '0.0.0.0', () => {

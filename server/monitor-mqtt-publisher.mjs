@@ -8,6 +8,7 @@ export function createMonitorMqttPublisher({ topic, log = () => {} }) {
   let client = null
   let configKey = ''
   let connected = false
+  let configured = false
   let pending = null
   let timer = null
   let lastPublishedRevision = null
@@ -28,7 +29,8 @@ export function createMonitorMqttPublisher({ topic, log = () => {} }) {
     if (nextKey === configKey) return
     stop()
     configKey = nextKey
-    if (!mqttConfig?.enabled || !/^wss?:\/\//i.test(mqttConfig.url || '')) return
+    configured = !!(mqttConfig?.enabled && /^wss?:\/\//i.test(mqttConfig.url || ''))
+    if (!configured) return
     try {
       client = mqtt.connect(mqttConfig.url, {
         clientId: `pptist-monitor-${Math.random().toString(36).slice(2, 10)}`,
@@ -75,7 +77,7 @@ export function createMonitorMqttPublisher({ topic, log = () => {} }) {
   }
 
   function status() {
-    return { topic, connected, lastPublishedRevision, lastError, queuedRevision: pending?.revision || null }
+    return { topic, configured, connected, lastPublishedRevision, lastError, queuedRevision: pending?.revision || null }
   }
 
   return { applyConfig, publish, status, stop }
