@@ -109,9 +109,23 @@ export function createMonitorService({ cacheDir }) {
       await fsp.writeFile(temp, nextJpeg)
       await fsp.rename(temp, target)
       await fsp.writeFile(path.join(cacheDir, 'display.jpg'), nextJpeg)
+      // 磁盘快照上限：revision 文件仅保留最近几张（retain 迟到下载 + 当前），
+      // 否则每次切页留一张、永不清理（实测累积数百张）。内存 Map 上限只管内存不管磁盘。
+      void pruneDiskSnapshots()
     }
     catch { /* 内存中仍保留最新合成图 */ }
     return snapshot
+  }
+
+  async function pruneDiskSnapshots(keep = 8) {
+    try {
+      const names = (await fsp.readdir(cacheDir)).filter(n => /^display-\d+\.jpg$/.test(n))
+      names.sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]))
+      for (const name of names.slice(keep)) {
+        await fsp.rm(path.join(cacheDir, name), { force: true }).catch(() => {})
+      }
+    }
+    catch { /* 目录不可读时忽略 */ }
   }
 
   async function applyHalf(role, { image, page, total }) {
@@ -153,6 +167,7 @@ export function createMonitorService({ cacheDir }) {
 
   async function init() {
     await fsp.mkdir(cacheDir, { recursive: true })
+    await pruneDiskSnapshots()
     const file = path.join(cacheDir, 'display.jpg')
     if (await fsp.stat(file).catch(() => null)) {
       jpeg = await fsp.readFile(file)

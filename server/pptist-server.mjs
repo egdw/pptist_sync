@@ -208,6 +208,9 @@ function createDocStore({ dataDir, label, deduplicateRaw = false }) {
         await fsp.access(path.join(versionDir, 'raw.file'))
         if (hasV2 || hasV3) current = meta
       }
+      // 启动即执行版本清理（删除超出保留数的旧版本 + 非当前版本的 raw.file）：
+      // 覆盖部署/崩溃后从未走到 publish 路径的存量数据
+      await cleanupVersions()
     }
     catch {
       current = null
@@ -220,7 +223,9 @@ function createDocStore({ dataDir, label, deduplicateRaw = false }) {
     return { exists: true, seq, version, filename, pageCount, updatedAt }
   }
 
-  /** 保留最近 N 个版本：v3 资产为懒加载，播放中的旧版本可能仍被请求（资产在全局池，不受影响） */
+  /** 保留最近 N 个版本：v3 资产为懒加载，播放中的旧版本可能仍被请求（资产在全局池，不受影响）。
+   *  raw.file 仅当前版本需要（下载原件/重发布用），历史版本的 raw 立即删除——
+   *  大文件场景下保留 2 份 600MB 级 raw 是最大的无意义占用 */
   async function cleanupVersions(keep = 2) {
     try {
       const names = (await fsp.readdir(versionsDir))
@@ -228,6 +233,12 @@ function createDocStore({ dataDir, label, deduplicateRaw = false }) {
         .sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)))
       for (const name of names.slice(keep)) {
         await fsp.rm(path.join(versionsDir, name), { recursive: true, force: true }).catch(() => {})
+      }
+      // 保留版本中非当前的 raw 也删除（republish 的硬链接不受影响：inode 共享）
+      for (const name of names.slice(0, keep)) {
+        if (current && name !== current.version) {
+          await fsp.rm(path.join(versionsDir, name, 'raw.file'), { force: true }).catch(() => {})
+        }
       }
     }
     catch (error) {
@@ -1090,12 +1101,12 @@ const server = http.createServer(async (req, res) => {
   }
 })
 
-await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init(), monitorService.init()])
+await Promise.all([mainDocStore.ensureDirs(), secondaryDocStore.ensureDirs(), studioService.init(), monitorService.init(), ledRenderService.init?.()])
 // ensureDirs 会清空 tmp/（含 v3 会话目录），v3 初始化必须在其后重建
-await defaultPptV3.init()
-await secondaryPptV3.init()
-try { monitorPublisher.applyConfig(JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8'))) } catch { /* 尚未配置 MQTT */ }
+// 先加载 current（GC 依赖其判定资产引用），再初始化 v3 服务（含启动回收）
 await Promise.all([mainDocStore.loadCurrent(), secondaryDocStore.loadCurrent()])
+await Promise.all([defaultPptV3.init(), secondaryPptV3.init()])
+try { monitorPublisher.applyConfig(JSON.parse(await fsp.readFile(PRESENTATION_LINK_CONFIG_FILE, 'utf8'))) } catch { /* 尚未配置 MQTT */ }
 const showFlowWs = attachShowFlowWs(server, log)
 getShowFlowWsStatus = showFlowWs.getStatus
 server.listen(PORT, '0.0.0.0', () => {

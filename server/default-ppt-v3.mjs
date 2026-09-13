@@ -103,7 +103,13 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
         await fsp.rm(path.join(assetsDir, name), { force: true }).catch(() => {})
       }
     }
-    // 清理超过 24 小时的遗留会话（进程重启后补偿）
+    await sweepStaleSessions()
+    await gcAssets()
+    // 定时清扫：崩溃遗留会话 + 孤儿资产（存储有界，不随上传次数无限增长）
+    setInterval(() => { void sweepStaleSessions().then(() => gcAssets()) }, 60 * 60 * 1000).unref()
+  }
+
+  async function sweepStaleSessions() {
     const cutoff = Date.now() - 24 * 3600 * 1000
     for (const name of await fsp.readdir(sessionsDir).catch(() => [])) {
       const dir = path.join(sessionsDir, name)
@@ -111,6 +117,47 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
       if (stat?.isDirectory() && stat.mtimeMs < cutoff) {
         await fsp.rm(dir, { recursive: true, force: true }).catch(() => {})
       }
+    }
+  }
+
+  /** 资产池垃圾回收：删除「未被当前版本引用、且超过宽限期」的孤儿资产。
+   *  跨文稿换稿/转码升级后旧资产不再被引用，不回收会随上传次数无限累积
+   *  （实测一稿 1.1GB）。引用只锚定当前版本：播放端收到新版本 SSE 即重载，
+   *  宽限期（默认 6h）兜住切换瞬间的在途请求，无需为上一版整份资产买单。 */
+  const ASSET_GC_GRACE_MS = Math.max(0.01, Number(process.env.PPTIST_ASSET_GC_GRACE_HOURS ?? 6)) * 3600 * 1000
+  async function gcAssets() {
+    try {
+      const current = store.getCurrent()
+      // current 尚未加载（启动早期/首次运行）时无法判定引用，跳过——
+      // 空引用不等同于全部孤儿，此时回收会误删整个资产池
+      if (!current?.version) return
+      const referenced = new Set()
+      try {
+        const bundle = JSON.parse(await fsp.readFile(path.join(store.versionsDir, current.version, 'bundle.json'), 'utf8'))
+        const collect = value => {
+          if (!value) return
+          if (typeof value === 'string') {
+            if (value.startsWith(`${prefix}/assets/`)) referenced.add(decodeURIComponent(value.split('/').pop()))
+          }
+          else if (Array.isArray(value)) value.forEach(collect)
+          else if (typeof value === 'object') Object.values(value).forEach(collect)
+        }
+        collect(bundle.slides); collect(bundle.theme)
+      }
+      catch { /* 当前版本无 bundle（v2 信封版）：资产若存在即孤儿 */ }
+      const cutoff = Date.now() - ASSET_GC_GRACE_MS
+      let removed = 0
+      for (const name of await fsp.readdir(assetsDir).catch(() => [])) {
+        if (name.startsWith('.') || referenced.has(name)) continue
+        const stat = await fsp.stat(path.join(assetsDir, name)).catch(() => null)
+        if (!stat?.isFile() || stat.mtimeMs > cutoff) continue
+        await fsp.rm(path.join(assetsDir, name), { force: true }).catch(() => {})
+        removed++
+      }
+      if (removed) log(`资产池回收 ${removed} 个孤儿资产（当前版本引用 ${referenced.size} 个）`)
+    }
+    catch (error) {
+      log('资产池回收失败：', error.message)
     }
   }
 
@@ -260,6 +307,8 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
         sendJson(res, 200, { ok: true, ...store.publicMeta() })
         // 发布成功后异步升级超大 GIF 覆盖层为视频（不阻塞响应；完成后以新 seq 热替换）
         if (gifTranscoder) scheduleGifUpgrade(meta.version)
+        // 异步回收换稿产生的孤儿资产（存储有界）
+        void gcAssets()
         return true
       }
 
@@ -284,6 +333,8 @@ export function createDefaultPptV3({ store, dataDir, maxUploadBytes, log, gifTra
         if (!changed) return
         await store.republishWithBundle(JSON.stringify(bundle))
         log(`[gif-transcode] ${version} 超大 GIF 已升级为视频并重新发布`)
+        // 升级后原 GIF 成为孤儿资产，异步回收
+        void gcAssets()
       }
       catch (error) {
         log('[gif-transcode] 升级失败，GIF 保持原状：', error.message)

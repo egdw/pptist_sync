@@ -7,6 +7,18 @@ import { renderLedJpeg } from './renderer.mjs'
 export function createLedRenderService({ cacheDir, portraitDir, publicUrl = '' }) {
   let revision = 0
   let lastResult = null
+  // 磁盘缓存上限：每个角色仅保留最近几张 revision JPEG，否则每次状态变化
+  // 留 4 张、永不清理（实测单角色累积 129 张）。retain 迟到下载 + 当前即够用。
+  async function pruneRoleDir(role, keep = 3) {
+    try {
+      const names = (await fsp.readdir(path.join(cacheDir, role))).filter(n => /^\d+\.jpg$/.test(n))
+      names.sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]))
+      for (const name of names.slice(keep)) {
+        await fsp.rm(path.join(cacheDir, role, name), { force: true }).catch(() => {})
+      }
+    }
+    catch { /* 目录不存在时忽略 */ }
+  }
   const render = async (state, requestOrigin = '', theme = {}) => {
     const nextRevision = ++revision
     const screens = []
@@ -19,6 +31,7 @@ export function createLedRenderService({ cacheDir, portraitDir, publicUrl = '' }
       const temp = `${target}.${crypto.randomUUID()}.tmp`
       await fsp.writeFile(temp, data)
       await fsp.rename(temp, target)
+      void pruneRoleDir(role)
       screens.push({
         role,
         url: `${publicUrl || requestOrigin}/led/${role}/${filename}`,
@@ -30,5 +43,8 @@ export function createLedRenderService({ cacheDir, portraitDir, publicUrl = '' }
     lastResult = { revision: nextRevision, screens, renderedAt: Date.now() }
     return { revision: nextRevision, screens }
   }
-  return { render, getStatus: () => lastResult }
+  async function init() {
+    for (const role of LED_ROLES) await pruneRoleDir(role)
+  }
+  return { render, init, getStatus: () => lastResult }
 }

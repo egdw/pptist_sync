@@ -120,6 +120,12 @@ export function createStudioService({ rootDir, revealDir, dataDir }) {
       meta.activeRevealTheme = meta.draftRevealTheme || meta.activeRevealTheme || 'default'
       meta.activeLcdTheme = meta.draftLcdTheme || meta.activeLcdTheme || 'default'
       await writeMeta(meta)
+      // 版本数上限：只保留最近 30 个（每个含 slides.md 快照，长期使用不无限累积）
+      try {
+        const names = (await fsp.readdir(versionsDir)).filter(n => /^[0-9T_\-]+$/.test(n)).sort().reverse()
+        for (const old of names.slice(30)) await fsp.rm(path.join(versionsDir, old), { recursive: true, force: true }).catch(() => {})
+      }
+      catch { /* 清理失败不影响发布 */ }
       return status()
     })
     return writeChain
