@@ -254,6 +254,7 @@ import Input from '@/components/Input.vue'
 import Select from '@/components/Select.vue'
 import Switch from '@/components/Switch.vue'
 import ThumbnailSlide from '@/views/components/ThumbnailSlide/index.vue'
+import { isBakedImagePage } from '@/show-flow/monitor'
 
 const showFlowStore = useShowFlowStore()
 const slidesStore = useSlidesStore()
@@ -308,8 +309,22 @@ const clearAllSteps = () => {
 // 副屏内容源类型：PPTist 文稿渲染真实缩略图，Reveal/Markdown 渲染 H1 文本卡
 const isMdPool = computed(() => secondarySource.value?.kind !== 'pptist-remote')
 
-const mainSlideOf = (index: number): Slide | undefined => mainSlides.value[index - 1]
-const secondarySlideOf = (index: number): Slide | undefined => secondarySlides.value[index - 1]
+/** 缩略图用剥离版页面：v3 整页底图已烘焙全部静态内容（含 GIF 首帧），
+ *  只渲染底图即可——否则页面池/步骤卡的每个缩略图都挂真实动图（实测单只
+ *  最大 139MB），几十个同时解码让编排页明显卡顿。按页面 id 缓存避免重建。 */
+const strippedThumbCache = new Map<string, Slide>()
+const thumbSlideOf = (slide: Slide | undefined): Slide | undefined => {
+  if (!slide || !isBakedImagePage(slide)) return slide
+  let stripped = strippedThumbCache.get(slide.id)
+  if (!stripped) {
+    stripped = { ...slide, elements: [] }
+    strippedThumbCache.set(slide.id, stripped)
+  }
+  return stripped
+}
+
+const mainSlideOf = (index: number): Slide | undefined => thumbSlideOf(mainSlides.value[index - 1])
+const secondarySlideOf = (index: number): Slide | undefined => thumbSlideOf(secondarySlides.value[index - 1])
 const mainThumbOf = (step: ShowStep): Slide | undefined =>
   step.main?.action === 'goto' ? mainSlideOf(mainManifest.value.find(p => p.id === step.main?.pageId)?.index ?? -1) : undefined
 const secondaryThumbOf = (step: ShowStep): Slide | undefined => {
