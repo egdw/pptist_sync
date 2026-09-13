@@ -15,7 +15,8 @@ const ALLOWED_ROLES = new Set(['controller', 'main', 'secondary', 'tablet', 'con
 const SINGLE_INSTANCE_ROLES = new Set(['controller', 'main'])
 
 export function attachShowFlowWs(server, log = () => {}) {
-  const wss = new WebSocketServer({ noServer: true })
+  // 单条消息上限：协议消息均为小 JSON；无上限时恶意/异常客户端可用巨消息撑爆内存
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 })
   /** ws -> { role } */
   const clients = new Map()
   const runtime = { stepId: null, mainPageId: null, secondaryPageId: null, seq: null, updatedAt: null }

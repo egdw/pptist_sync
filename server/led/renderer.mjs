@@ -1,7 +1,9 @@
 import path from 'node:path'
+import fsp from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas'
+import { assertUploadedImage } from '../image-guard.mjs'
 import { drawDefaultTemplate } from './templates/default.mjs'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
@@ -45,7 +47,11 @@ async function loadPreparedPortrait(source) {
   // 同一路径有新上传文件时清掉旧缓存。
   for (const key of portraitCache.keys()) if (key.startsWith(`${source}:`)) portraitCache.delete(key)
 
-  const image = await loadImage(source)
+  // 原生解码器对截断/损坏图片会段错误击杀进程（try/catch 不可捕获）。
+  // 头像上传入口已有校验，这里兜底部署机器上的存量坏文件。
+  const bytes = await fsp.readFile(source)
+  assertUploadedImage(bytes, 'LCD 头像文件')
+  const image = await loadImage(bytes)
   const prepared = preparePortrait(image)
   portraitCache.set(cacheKey, prepared)
   if (portraitCache.size > 12) portraitCache.delete(portraitCache.keys().next().value)

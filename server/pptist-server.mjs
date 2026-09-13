@@ -592,7 +592,8 @@ function sendJson(res, status, data, headers = {}) {
 
 async function serveStatic(req, res, pathname, baseDir = DIST_DIR) {
   let filePath = path.normalize(path.join(baseDir, decodeURIComponent(pathname)))
-  if (!filePath.startsWith(baseDir)) {
+  // 必须带分隔符：否则 baseDir=.../dist 时 .../distX 也能通过前缀判断
+  if (!filePath.startsWith(baseDir.endsWith(path.sep) ? baseDir : baseDir + path.sep)) {
     res.writeHead(403)
     res.end('Forbidden')
     return

@@ -109,10 +109,22 @@ console.log(`阶段3 200次合成: RSS ${rss2.toFixed(0)}→${rss3.toFixed(0)}MB
     body: JSON.stringify({ page: 1, total: 40, image: 'data:image/jpeg;base64,' + Buffer.alloc(200, 0x41).toString('base64') }),
   })
   const aliveAfterBad = await fetch(`${BASE}/default-ppt-api/config`)
-  const pass = s1.totalConnections <= 2 && s2.totalConnections === 2 && (rss3 - rss1) < 120 && bad.status === 400 && aliveAfterBad.ok
+  let pass = s1.totalConnections <= 2 && s2.totalConnections === 2 && (rss3 - rss1) < 120 && bad.status === 400 && aliveAfterBad.ok
   console.log(`阶段4 损坏图片: ${bad.status}(应400) 服务存活=${aliveAfterBad.ok}`)
 
+// ---- 阶段 5: 超限巨消息应被丢弃且服务存活 ----
   controller.close(); secondary.close()
+  await sleep(300)
+  const flood = new WebSocket(`ws://127.0.0.1:${PORT}/showflow`)
+  await new Promise(r => flood.once('open', r))
+  send(flood, { type: 'HELLO', role: 'controller' })
+  await waitMsg(flood, 'HELLO_ACK')
+  const closed = new Promise(r => flood.once('close', r))
+  try { flood.send(Buffer.alloc(2 * 1024 * 1024, 0x41)) } catch {}
+  await Promise.race([closed, sleep(3000)])
+  const aliveAfterFlood = await fetch(`${BASE}/default-ppt-api/config`)
+  pass = pass && aliveAfterFlood.ok
+  console.log(`阶段5 巨消息: 服务存活=${aliveAfterFlood.ok}`)
 await sleep(300)
 
 console.log(`\n浸泡结论: ${pass ? '✓ 无泄漏(clients 表归零/稳定, RSS 增长有界)' : '✗ 需要进一步排查'}`)

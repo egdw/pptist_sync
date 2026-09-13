@@ -18,6 +18,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createCanvas, loadImage } from '@napi-rs/canvas'
+import { assertUploadedImage } from './image-guard.mjs'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 const FFMPEG_TIMEOUT_MS = 15 * 60 * 1000
@@ -106,7 +107,10 @@ export function createGifTranscoder({ assetsDir, thresholdMB = 24, decodedCapMB 
     try {
       const poster = path.join(workDir, 'probe.png')
       await runFfmpeg(await ffmpegReady(), ['-y', '-i', gifPath, '-vframes', 1, '-vf', `scale='min(${MAX_VIDEO_WIDTH},iw)':-2`, poster], 120_000)
-      const image = await loadImage(poster)
+      // ffmpeg 输出也可能损坏（磁盘满/中断），解码前校验防段错误
+      const posterBytes = await fsp.readFile(poster)
+      assertUploadedImage(posterBytes, 'GIF 首帧')
+      const image = await loadImage(posterBytes)
       const { width, height } = image
       const canvas = createCanvas(width, height)
       const ctx = canvas.getContext('2d')
