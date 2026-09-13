@@ -47,6 +47,7 @@ import { parseMarkdownManifest } from './studio-html-md-manifest.mjs'
 import { createMonitorService } from './monitor-service.mjs'
 import { createDefaultPptV3 } from './default-ppt-v3.mjs'
 import { createGifTranscoder } from './gif-transcode.mjs'
+import { assertUploadedImage } from './image-guard.mjs'
 import { createMonitorMqttPublisher } from './monitor-mqtt-publisher.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -911,6 +912,7 @@ const server = http.createServer(async (req, res) => {
       }
       const data = Buffer.concat(chunks)
       if (!data.length) { sendJson(res, 400, { error: '头像文件为空' }); return }
+      try { assertUploadedImage(data, 'LCD 头像') } catch (e) { sendJson(res, e.status || 400, { error: e.message }); return }
       await fsp.mkdir(LED_PORTRAIT_DIR, { recursive: true })
       await atomicWrite(path.join(LED_PORTRAIT_DIR, `${portraitMatch[1]}.image`), data)
       sendJson(res, 200, { ok: true, role: portraitMatch[1] })
@@ -1100,7 +1102,8 @@ const server = http.createServer(async (req, res) => {
   }
   catch (error) {
     log('请求处理异常：', error.message)
-    if (!res.headersSent) sendJson(res, 500, { error: error.message })
+    // 带明确 status 的业务错误（如图片校验 400）按原状态码返回
+    if (!res.headersSent) sendJson(res, error.status || 500, { error: error.message })
     else res.end()
   }
 })

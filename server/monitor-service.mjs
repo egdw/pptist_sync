@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { createCanvas, GlobalFonts, loadImage } from '@napi-rs/canvas'
+import { assertUploadedImage } from './image-guard.mjs'
 
 const ROLES = ['main', 'secondary']
 const WIDTH = 1280
@@ -134,6 +135,8 @@ export function createMonitorService({ cacheDir }) {
     const comma = base64.indexOf(',')
     const buffer = Buffer.from(comma >= 0 ? base64.slice(comma + 1) : base64, 'base64')
     if (!buffer.length) throw new Error('画面数据为空')
+    // 截断/损坏图片会让原生解码器段错误击杀整个进程，进入合成队列前先校验
+    assertUploadedImage(buffer, '监控半区')
     const task = async () => {
       halves[role] = { buffer, page: Math.max(1, Number(page) || 1), total: Math.max(1, Number(total) || 1) }
       return composite()

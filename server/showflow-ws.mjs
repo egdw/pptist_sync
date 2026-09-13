@@ -191,5 +191,23 @@ export function attachShowFlowWs(server, log = () => {}) {
     }
     return { totalConnections: clients.size, checkedAt: now, roles, runtime: { ...runtime } }
   }
+
+  // 僵尸连接清扫：客户端断网/断电不会发 FIN，socket 半开永久滞留 clients 表。
+  // 各端心跳 2~25s 一次，超过 5 分钟无任何消息即可安全判定死亡。
+  // （角色被顶号接管另有 1s 协议探测，这里兜底无人接管的场景，表不随时间增长）
+  const ZOMBIE_SWEEP_MS = 60 * 1000
+  const ZOMBIE_IDLE_THRESHOLD_MS = 5 * 60 * 1000
+  const sweepZombies = () => {
+    const now = Date.now()
+    for (const [ws, info] of clients) {
+      if (now - (info.lastSeen || info.connectedAt) < ZOMBIE_IDLE_THRESHOLD_MS) continue
+      clients.delete(ws)
+      try { ws.terminate() } catch { /* 已死 */ }
+      log(`[showflow-ws] 清扫超时无心跳的僵尸连接（${info.role || '未注册'}，闲置 ${Math.round((now - (info.lastSeen || info.connectedAt)) / 1000)}s）`)
+    }
+  }
+  const sweepTimer = setInterval(sweepZombies, ZOMBIE_SWEEP_MS)
+  sweepTimer.unref()
+
   return { wss, getStatus }
 }
