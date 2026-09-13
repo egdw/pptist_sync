@@ -10,6 +10,10 @@
  * ffmpeg 解析顺序：PPTIST_FFMPEG 环境变量 → PATH 中的 ffmpeg →
  * 仓库 .devtools/bin/ffmpeg.exe（仅开发机，不入库/不入部署包）。
  * 找不到 ffmpeg 时整体禁用，GIF 保持原状（小 GIF 本就能直接播）。
+ *
+ * 编码器按构建实际能力回退：libx264 → h264_rkmpp（RK 硬编）→ libvpx-vp9
+ * → mpeg4；全部失败时降级为静态首帧图——巨型 GIF 永不原样下发播放端
+ * （RK3588 实测：解码驻留 GB 级 → 渲染进程卡死 → 整机假死）。
  */
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -40,8 +44,54 @@ async function resolveFfmpeg(log) {
     }
   }
   ffmpegResolved = ''
-  log?.('[gif-transcode] 未找到 ffmpeg（PPTIST_FFMPEG / PATH / .devtools），超大 GIF 保持原状')
+  log?.('[gif-transcode] 未找到 ffmpeg（PPTIST_FFMPEG / PATH / .devtools），超大 GIF 将降级为静态首帧')
   return ''
+}
+
+/** 可用视频编码器列表（一次性探测并缓存）。
+ *  ffmpeg 构建差异极大：RK3588 板卡的 rkmpp 构建不带 libx264（无 -preset 选项），
+ *  标准构建不带 h264_rkmpp——转码参数必须按实际编码器生成，否则全线失败。 */
+let encodersCache = null
+async function listEncoders(log) {
+  if (encodersCache) return encodersCache
+  const cmd = await resolveFfmpeg(log)
+  if (!cmd) { encodersCache = []; return encodersCache }
+  const text = await captureOutput(cmd, ['-hide_banner', '-encoders'], 8000)
+  const found = new Set()
+  for (const line of String(text || '').split('\n')) {
+    const m = line.trim().match(/^[A-Z.]{3,11}\s+([\w@._-]+)\s+.*/)
+    if (m) found.add(m[1])
+  }
+  encodersCache = found
+  return found
+}
+
+function captureOutput(cmd, args, timeoutMs) {
+  return new Promise(resolve => {
+    let done = false
+    let out = ''
+    try {
+      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'] })
+      const timer = setTimeout(() => {
+        if (!done) { done = true; child.kill('SIGKILL'); resolve('') }
+      }, timeoutMs)
+      child.stdout.on('data', d => { out += d; if (out.length > 262144) child.kill('SIGKILL') })
+      child.on('error', () => { if (!done) { done = true; clearTimeout(timer); resolve('') } })
+      child.on('close', () => { if (!done) { done = true; clearTimeout(timer); resolve(out) } })
+    }
+    catch { resolve('') }
+  })
+}
+
+/** 不透明编码回退链：libx264（标准构建）→ h264_rkmpp（RK 硬编）→
+ *  libvpx-vp9 → mpeg4（ffmpeg 内置，任何构建都有）。ext 决定输出容器。 */
+function opaqueEncoderPlan(name) {
+  switch (name) {
+    case 'libx264': return { args: ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'], ext: 'mp4', label: 'H.264(x264)' }
+    case 'h264_rkmpp': return { args: ['-c:v', 'h264_rkmpp', '-b:v', '4M', '-pix_fmt', 'nv12'], ext: 'mp4', label: 'H.264(rkmpp)' }
+    case 'libvpx-vp9': return { args: ['-c:v', 'libvpx-vp9', '-deadline', 'good', '-cpu-used', '4', '-crf', '34', '-b:v', '0', '-pix_fmt', 'yuv420p'], ext: 'webm', label: 'VP9' }
+    default: return { args: ['-c:v', 'mpeg4', '-q:v', '5', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'], ext: 'mp4', label: 'MPEG-4' }
+  }
 }
 
 function spawnSync(cmd, args, timeoutMs) {
@@ -140,22 +190,54 @@ export function createGifTranscoder({ assetsDir, thresholdMB = 24, decodedCapMB 
     try {
       const t0 = Date.now()
       const hasAlpha = await firstFrameHasAlpha(gifPath, workDir)
-      const out = path.join(workDir, hasAlpha ? 'out.webm' : 'out.mp4')
-      const scale = `scale='min(${MAX_VIDEO_WIDTH},iw)':-2`
-      if (hasAlpha) {
-        await runFfmpeg(await ffmpegReady(), ['-y', '-i', gifPath, '-an', '-vf', scale, '-c:v', 'libvpx-vp9', '-deadline', 'good', '-cpu-used', '4', '-crf', '34', '-b:v', '0', '-pix_fmt', 'yuva420p', out])
-      }
-      else {
-        await runFfmpeg(await ffmpegReady(), ['-y', '-i', gifPath, '-an', '-vf', scale, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out])
-      }
-      const videoBytes = await fsp.readFile(out)
-      if (!videoBytes.length) throw new Error('转码产物为空')
+      // probe.png 是永久的降级兜底：无论编码器成败，首帧静态图都能终结解码驻留
       const posterBytes = await fsp.readFile(path.join(workDir, 'probe.png')).catch(() => null)
-      const videoAsset = await storeAsset(videoBytes, hasAlpha ? 'webm' : 'mp4')
-      const posterAsset = posterBytes ? await storeAsset(posterBytes, 'png') : null
-      const sec = ((Date.now() - t0) / 1000).toFixed(1)
-      log(`[gif-transcode] ${assetName} ${(stat.size / 1e6).toFixed(1)}MB → ${videoAsset} ${(videoBytes.length / 1e6).toFixed(1)}MB（${hasAlpha ? 'VP9-透明' : 'H.264'}，${sec}s）`)
-      return { videoAsset, posterAsset }
+      const scale = `scale='min(${MAX_VIDEO_WIDTH},iw)':-2`
+      const encoders = await listEncoders(log)
+
+      let videoBytes = null
+      let videoExt = 'mp4'
+      let label = ''
+      // 编码器回退链（详见 opaqueEncoderPlan）：按 ffmpeg 构建实际具备的编码器依次尝试。
+      // 含透明 GIF 只有 VP9 yuva420p 能保透明；无 VP9 时走静态首帧降级（不透明化会出现黑块）
+      const chain = hasAlpha
+        ? (encoders.has('libvpx-vp9') ? ['libvpx-vp9'] : [])
+        : ['libx264', 'h264_rkmpp', 'libvpx-vp9', 'mpeg4'].filter(n => encoders.has(n) || n === 'mpeg4')
+      for (const name of chain) {
+        const plan = hasAlpha
+          ? { args: ['-c:v', 'libvpx-vp9', '-deadline', 'good', '-cpu-used', '4', '-crf', '34', '-b:v', '0', '-pix_fmt', 'yuva420p'], ext: 'webm', label: 'VP9-透明' }
+          : opaqueEncoderPlan(name)
+        const out = path.join(workDir, `out.${plan.ext}`)
+        try {
+          await runFfmpeg(await ffmpegReady(), ['-y', '-i', gifPath, '-an', '-vf', scale, ...plan.args, out])
+          const bytes = await fsp.readFile(out)
+          if (!bytes.length) throw new Error('转码产物为空')
+          videoBytes = bytes
+          videoExt = plan.ext
+          label = plan.label
+          break
+        }
+        catch (error) {
+          log(`[gif-transcode] 编码器 ${name} 失败（${String(error.message).slice(0, 120)}），尝试下一个`)
+        }
+      }
+
+      if (videoBytes) {
+        const videoAsset = await storeAsset(videoBytes, videoExt)
+        const posterAsset = posterBytes ? await storeAsset(posterBytes, 'png') : null
+        const sec = ((Date.now() - t0) / 1000).toFixed(1)
+        log(`[gif-transcode] ${assetName} ${(stat.size / 1e6).toFixed(1)}MB → ${videoAsset} ${(videoBytes.length / 1e6).toFixed(1)}MB（${label}，${sec}s）`)
+        return { videoAsset, posterAsset }
+      }
+
+      // 所有编码器失败：降级为静态首帧。巨型 GIF 原样下发播放端必然造成
+      // 解码驻留卡死（RK3588 整机假死实测根因），静态图是最后防线
+      if (posterBytes?.length) {
+        const posterAsset = await storeAsset(posterBytes, 'png')
+        log(`[gif-transcode] 警告：${assetName} 全部编码器失败，已降级为静态首帧（${(stat.size / 1e6).toFixed(1)}MB GIF 不再下发播放端）`)
+        return { staticAsset: posterAsset }
+      }
+      throw new Error('转码失败且无法提取首帧')
     }
     finally {
       await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {})
@@ -216,6 +298,15 @@ export function createGifTranscoder({ assetsDir, thresholdMB = 24, decodedCapMB 
         }
         const result = memo.get(assetName)
         if (!result) continue
+        if (result.staticAsset) {
+          // 编码器全败的降级：GIF → 静态首帧（type 仍为 image，保住原有布局属性）
+          slide.elements[i] = {
+            ...el,
+            src: `${assetUrlPrefix}/assets/${result.staticAsset}`,
+          }
+          changed = true
+          continue
+        }
         slide.elements[i] = {
           ...el,
           type: 'video',

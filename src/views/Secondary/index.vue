@@ -40,7 +40,7 @@ import {
 import { SecondaryShowFlowClient } from '@/show-flow/secondaryClient'
 import { resolveShowFlowWsUrl } from '@/show-flow/websocket/client'
 import { useShowFlowStore } from '@/show-flow/store'
-import { captureAndUploadHalf, isBakedImagePage } from '@/show-flow/monitor'
+import { captureAndUploadHalf } from '@/show-flow/monitor'
 import type { ShowFlowMessage } from '@/show-flow/websocket/protocol'
 
 import BaseView from '@/views/Screen/BaseView.vue'
@@ -142,10 +142,8 @@ const navigate = async (pageId: string) => {
     clearTimeout(captureTimer)
     captureTimer = window.setTimeout(() => {
       if (slidesStore.slides[slidesStore.slideIndex]?.id !== pageId) return
-      // v3 整页底图已烘焙 GIF 首帧：截图跳过 GIF 动图，避免把超大动图 base64 进 SVG
-      void captureAndUploadHalf('secondary', el, index + 1, slidesStore.slides.length, {
-        skipGifOverlays: isBakedImagePage(slidesStore.slides[slidesStore.slideIndex]),
-      })
+      // GIF/视频覆盖层由 captureAndUploadHalf 内部统一过滤（监控板不需要动图）
+      void captureAndUploadHalf('secondary', el, index + 1, slidesStore.slides.length)
     }, 180)
   }
 }
@@ -173,6 +171,7 @@ let captureTimer = 0
 let client: SecondaryShowFlowClient | null = null
 let ws: WebSocket | null = null
 let reconnectTimer = 0
+let heartbeatTimer = 0
 const wsConnected = ref(false)
 const controlled = ref(false)
 
@@ -180,6 +179,19 @@ const send = (msg: ShowFlowMessage) => {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ ...msg, role: 'secondary', sessionId: client?.sessionId ?? undefined }))
   }
+}
+
+// ---- 心跳：服务端按 lastSeen 清扫僵尸连接（5 分钟无消息即断）。
+// 副屏静置时除 PONG 外无上行消息，曾被每 6 分钟误杀一轮（断连→重连→
+// 控制端 resync 风暴）。每 25s 主动 PING 让 lastSeen 始终新鲜。
+const HEARTBEAT_INTERVAL_MS = 25000
+const startHeartbeat = () => {
+  stopHeartbeat()
+  heartbeatTimer = window.setInterval(() => send({ type: 'PING' }), HEARTBEAT_INTERVAL_MS)
+}
+const stopHeartbeat = () => {
+  if (heartbeatTimer) clearInterval(heartbeatTimer)
+  heartbeatTimer = 0
 }
 
 const connect = () => {
@@ -194,6 +206,7 @@ const connect = () => {
     reconnectDelay = 2000
     wsConnected.value = true
     send({ type: 'HELLO', role: 'secondary', meta: { screen: 'pptist-remote', url: location.pathname } })
+    startHeartbeat()
   }
   ws.onmessage = event => {
     try {
@@ -206,6 +219,7 @@ const connect = () => {
     controlled.value = false
     showFlowStore.setRemoteControlled(false)
     client?.reset()
+    stopHeartbeat()
     scheduleReconnect()
   }
   ws.onerror = () => ws?.close()
@@ -251,6 +265,7 @@ onUnmounted(() => {
   syncStopped = true
   unsubscribe?.()
   if (reconnectTimer) clearTimeout(reconnectTimer)
+  stopHeartbeat()
   ws?.close()
   showFlowStore.setRemoteControlled(false)
 })

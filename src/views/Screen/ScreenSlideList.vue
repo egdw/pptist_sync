@@ -38,7 +38,7 @@
 </template>
 
 <script lang="ts" setup>
-import { computed, provide } from 'vue'
+import { computed, onUnmounted, provide, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useSlidesStore } from '@/store'
 import { useShowFlowStore } from '@/show-flow/store'
@@ -57,6 +57,7 @@ const props = defineProps<{
 }>()
 
 const { slideIndex, viewportSize } = storeToRefs(useSlidesStore())
+const showFlowStore = useShowFlowStore()
 
 const { slidesWithTurningMode } = useSlidesWithTurningMode()
 
@@ -64,18 +65,30 @@ const { slidesWithTurningMode } = useSlidesWithTurningMode()
 // 精确隐藏 GIF 覆盖层而不影响普通页面。
 const bakedMark = computed(() => slidesWithTurningMode.value.map(s => (isBakedImagePage(s) ? '1' : '')))
 
-// 联动硬切模式（showflow-jump 无过渡）下邻居页永远不会露出画面，
-// 其 GIF 覆盖层无需挂载——否则当前页±1 的大 GIF（实测最大 134MB/个）
-// 同时解码驻留，长演示/中场休息时把放映机内存拖垮（约 30 分钟卡死反馈）。
-// 底图含 GIF 首帧，剥离覆盖层后视觉无损；普通放映保留原行为。
-const linkedHardCut = computed(() => {
-  const showFlowStore = useShowFlowStore()
-  return showFlowStore.linkedScreening && showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
+// 重资源邻居剥离生效条件：主屏联动硬切模式，或本窗口是受控副屏
+// （remoteControlled 由 /secondary 页在收到导航时置位，与主屏 linkedScreening 等效）
+const stripNeighborOverlays = computed(() => {
+  const linkedHardCut = showFlowStore.linkedScreening && showFlowStore.flow.enabled && showFlowStore.flow.steps.length > 0
+  return linkedHardCut || showFlowStore.remoteControlled
 })
+
+// 退场豁免：上一页在退出动画期间（≤900ms）仍可见，动画结束后才剥离其覆盖层；
+// 当前页永不剥离。GIF/视频覆盖层（实测最大 134MB/个）若在 ±1 邻居页驻留挂载，
+// 会与当前页同时解码，长演示把放映机内存拖垮（RK3588 约 30 分钟卡死实测）。
+const lingeringIndex = ref(-1)
+let settleTimer = 0
+watch(slideIndex, (index, oldIndex) => {
+  lingeringIndex.value = oldIndex ?? -1
+  if (settleTimer) clearTimeout(settleTimer)
+  settleTimer = window.setTimeout(() => { lingeringIndex.value = -1 }, 900)
+})
+onUnmounted(() => { if (settleTimer) clearTimeout(settleTimer) })
+
 const renderedSlide = (index: number) => {
   const slide = slidesWithTurningMode.value[index]
-  if (index === slideIndex.value || !linkedHardCut.value || !bakedMark.value[index]) return slide
-  // 邻居页剥离重资源覆盖层：GIF 图片与视频（底图已烘焙首帧，视觉无损）
+  if (index === slideIndex.value || index === lingeringIndex.value || !stripNeighborOverlays.value) return slide
+  // 邻居页剥离重资源覆盖层：GIF 图片与视频（baked 页底图已烘焙首帧，视觉无损；
+  // 混排页邻居本身不可见，剥离同样不可感知）
   const elements = slide.elements?.filter(el => !(el.type === 'video' || (el.type === 'image' && /\.gif(\?|$)/i.test(el.src || ''))))
   return elements && elements.length !== slide.elements?.length ? { ...slide, elements } : slide
 }
