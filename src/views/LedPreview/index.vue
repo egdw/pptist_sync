@@ -90,7 +90,7 @@ async function applySelectedPage() {
 }
 
 async function render() {
-  try { status.value = '服务端渲染中…'; result.value = await renderLcdState(state, theme); status.value = `已按实际 LCD 状态生成 revision ${result.value.revision}` }
+  try { status.value = '服务端渲染中…'; result.value = await renderLcdState(state, { theme }); status.value = `已按实际 LCD 状态生成 revision ${result.value.revision}` }
   catch (error) { status.value = `渲染失败：${error instanceof Error ? error.message : error}` }
 }
 

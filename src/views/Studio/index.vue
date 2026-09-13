@@ -379,7 +379,7 @@ async function saveLcdConfigJson(){
 }
 async function deleteLcdTheme(id:string){if(!confirm(`确认删除 LCD Theme ${id}？`))return;const r=await fetch(`/api/studio/lcd/themes/${encodeURIComponent(id)}`,{method:'DELETE'});if(!r.ok)alert((await r.json()).error);await loadLcdThemes()}
 function formatTime(value:number|null){return value?new Date(value).toLocaleTimeString():'—'}
-async function renderStudioLcd(){try{lcdMessage.value='服务端正在生成四张 JPEG…';lcdResult.value=await renderLcdState(lcdState,lcdConfig);lcdMessage.value=`已生成 revision ${lcdResult.value.revision}`}catch(error){lcdMessage.value=`渲染失败：${error instanceof Error?error.message:error}`}}
+async function renderStudioLcd(){try{lcdMessage.value='服务端正在生成四张 JPEG…';lcdResult.value=await renderLcdState(lcdState,{theme:lcdConfig});lcdMessage.value=`已生成 revision ${lcdResult.value.revision}`}catch(error){lcdMessage.value=`渲染失败：${error instanceof Error?error.message:error}`}}
 function testDisplay(){if(!lcdResult.value)return;const sent=publishLcdRenderResult(lcdResult.value,publishPresentationMqtt);lcdMessage.value=sent===4?'已通过 Controller MQTT 通道下发四块 LCD':`仅下发 ${sent}/4，请检查 MQTT 连接`}
 function openImage(url:string){window.open(url,'_blank')}
 async function loadVersions() { versions.value = (await (await fetch('/api/studio/versions')).json()).versions }
