@@ -24,7 +24,7 @@ ACTION="start"
 ARGS=()
 for arg in "$@"; do
   case "$arg" in
-    restart|stop|status) ACTION="$arg" ;;
+    restart|stop|status|check) ACTION="$arg" ;;
     --main=*) MAIN_REQ="${arg#--main=}" ;;
     --sec=*) SEC_REQ="${arg#--sec=}" ;;
     *) ARGS+=("$arg") ;;
@@ -38,6 +38,38 @@ if [ "$ACTION" = "stop" ]; then
   exit 0
 fi
 
+# ---------- check: 现场赛前自检（任何陌生屏幕环境先跑这个） ----------
+if [ "$ACTION" = "check" ]; then
+  FAIL=0
+  say() { echo "  $*"; }
+  echo "== 现场赛前自检 =="
+  # 1. 显示器
+  export DISPLAY="${DISPLAY:-:0}"
+  XAUTH=$(ps -eo args | grep -o "\-auth [^ ]*" | grep mutter-Xwayland | head -1 | cut -d" " -f2)
+  [ -n "$XAUTH" ] && export XAUTHORITY="$XAUTH"
+  MON_OUT=$(xrandr --listmonitors 2>&1)
+  MON_N=$(echo "$MON_OUT" | grep -cE "^[[:space:]]*[0-9]+:")
+  if [ "$MON_N" -ge 2 ]; then say "✓ 显示器: $MON_N 块 ($(echo "$MON_OUT" | grep -oE 'HDMI[-0-9]*|DP[-0-9]*|eDP[-0-9]*' | sort -u | paste -sd' ' -))"; 
+  elif [ "$MON_N" = 1 ]; then say "⚠ 只检测到 1 块显示器——将以主屏全屏 + 副屏半屏同屏降级运行: "; echo "$MON_OUT" | tail -n +2;
+  else say "✗ 未检测到显示器（xrandr 失败或桌面未登录）"; FAIL=1; fi
+  # 2. 服务
+  if curl -s --max-time 4 "http://127.0.0.1:${PORT}/default-ppt-api/config" >/dev/null 2>&1; then say "✓ pptist 服务在线（端口 ${PORT}）"; else say "✗ pptist 服务不可达——先 sudo systemctl restart pptist"; FAIL=1; fi
+  # 3. 文稿
+  CUR=$(curl -s --max-time 4 "http://127.0.0.1:${PORT}/default-ppt-api/current" 2>/dev/null)
+  echo "$CUR" | grep -q '"exists":true' && say "✓ 主屏文稿: $(echo "$CUR" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("filename",""), d.get("pageCount",""), "页")' 2>/dev/null)" || { say "✗ 主屏无文稿"; FAIL=1; }
+  # 4. 禁硬解
+  if grep -qs "disable-accelerated-video-decode" /etc/chromium-browser/customizations/* 2>/dev/null; then say "✓ Chromium 禁硬解已配置"; else say "✗ 禁硬解未配置（整机冻结风险）——见部署说明第 1 条"; FAIL=1; fi
+  # 5. 看门狗
+  systemctl is-active --quiet pptist-watchdog.timer 2>/dev/null && say "✓ 看门狗 timer 运行中" || say "⚠ 看门狗未启用（卡死无法自愈）——见部署说明第 4 条"
+  # 6. swap
+  [ "$(awk '/SwapTotal/{print $2}' /proc/meminfo)" -gt 0 ] && say "✓ swap 已启用" || say "⚠ 无 swap（内存耗尽会拖死整机）——见部署说明第 2 条"
+  # 7. 联动运行时
+  curl -s --max-time 4 "http://127.0.0.1:${PORT}/showflow-api/runtime" | grep -q '"exists":true' && say "✓ 联动运行时有记录（重启可恢复画面）" || say "ℹ 联动运行时暂无记录（首次放映后会自动写入）"
+  echo "== 结论: $([ "$FAIL" = 0 ] && echo 全部通过 || echo 有失败项，请先处理) =="
+  [ "$FAIL" = 0 ] || exit 1
+  exit 0
+fi
+
 # ---------- status ----------
 if [ "$ACTION" = "status" ]; then
   echo "== 显示器 =="
@@ -46,7 +78,7 @@ if [ "$ACTION" = "status" ]; then
   [ -n "$XAUTH" ] && export XAUTHORITY="$XAUTH"
   xrandr --listmonitors 2>/dev/null || echo "(xrandr 不可用)"
   echo "== kiosk 实例 =="
-  ps -eo pid,args | grep "chromium[-]browser" | grep -vE "type=|crashpad" | grep -oE "user-data-dir=[^ ]+|http[^ ]+" | paste -sd' ' -n - 2>/dev/null || true
+  ps -eo args | grep "chromium[-]browser" | grep -vE "type=|crashpad" | grep -oE "user-data-dir=[^ ]+|http[^ ]+" || echo "  (无运行中的实例)"
   echo "== 联动运行时 =="
   curl -s --max-time 4 "http://127.0.0.1:${PORT}/api/studio/system/status" | python3 -c "
 import json,sys,time
@@ -97,23 +129,42 @@ if command -v xrandr >/dev/null 2>&1; then
   done < <(xrandr --listmonitors 2>/dev/null | grep -E "^\s*[0-9]+:")
 fi
 
-# 主/副屏分配: CLI > 环境变量 > 自动(第一/第二块活动屏, 缺省名 HDMI-1/HDMI-2)
+# 主/副屏分配: CLI > 环境变量 > 自动(第一/第二块活动屏)
+if [ "${#MON_LIST[@]}" = 0 ]; then
+  echo "[dual-kiosk] 错误：未检测到任何显示器（桌面会话未登录或 xrandr 失败）——先运行 ./start-dual-kiosk.sh check 诊断" >&2
+  exit 1
+fi
 MAIN_REQ="${MAIN_REQ:-${PPTIST_MAIN_DISPLAY:-}}"
 SEC_REQ="${SEC_REQ:-${PPTIST_SEC_DISPLAY:-}}"
-if [ -n "$MAIN_REQ" ]; then MAIN_DISP="$MAIN_REQ"; else MAIN_DISP="${MON_LIST[0]:-HDMI-1}"; fi
-if [ -n "$SEC_REQ" ]; then SEC_DISP="$SEC_REQ"; else SEC_DISP="${MON_LIST[1]:-${MON_LIST[0]:-HDMI-2}}"; fi
+if [ -n "$MAIN_REQ" ]; then MAIN_DISP="$MAIN_REQ"; else MAIN_DISP="${MON_LIST[0]:-}"; fi
+SEC_SAME=0
+if [ -n "$SEC_REQ" ] && [ "$SEC_REQ" != "none" ]; then SEC_DISP="$SEC_REQ";
+elif [ "$SEC_REQ" = "none" ]; then SEC_DISP="";
+elif [ "${#MON_LIST[@]}" -ge 2 ]; then SEC_DISP="${MON_LIST[1]}";
+else
+  # 现场只有一块屏: 主屏全屏, 副屏以右半屏降级同显（不阻断启动）
+  SEC_DISP="$MAIN_DISP"; SEC_SAME=1
+  echo "[dual-kiosk] ⚠ 只检测到一块显示器：主屏将全屏显示，副屏以右半屏窗口降级同显" >&2
+fi
 
 for d in "$MAIN_DISP" "$SEC_DISP"; do
-  if [ -z "${MON_X[$d]:-}" ]; then
+  if [ -n "$d" ] && [ -z "${MON_X[$d]:-}" ]; then
     echo "[dual-kiosk] 错误：显示器 $d 未连接或不存在。活动显示器: ${MON_LIST[*]:-未知}" >&2
-    echo "             可用 --main=<名> --sec=<名> 重新指定" >&2
+    echo "             可用 --main=<名> --sec=<名> 重新指定（--sec=none 表示只跑主屏）" >&2
     exit 1
   fi
 done
-MX="${MON_X[$MAIN_DISP]}"; MW="${MON_W[$MAIN_DISP]}"; MH="${MON_H[$MAIN_DISP]}"
-SX="${MON_X[$SEC_DISP]}"; SW="${MON_W[$SEC_DISP]}"; SH="${MON_H[$SEC_DISP]}"
+MX="${MON_X[$MAIN_DISP]:-0}"; MW="${MON_W[$MAIN_DISP]:-3840}"; MH="${MON_H[$MAIN_DISP]:-2160}"
+if [ "$SEC_SAME" = "1" ]; then
+  SX=$((MX + MW / 2)); SW=$((MW / 2)); SH="$MH"
+else
+  SX="${MON_X[$SEC_DISP]:-0}"; SW="${MON_W[$SEC_DISP]:-3840}"; SH="${MON_H[$SEC_DISP]:-2160}"
+fi
 echo "[dual-kiosk] 分配: 主屏=$MAIN_DISP(+${MX}, ${MW}x${MH}) 副屏=$SEC_DISP(+${SX}, ${SW}x${SH})"
-[ "$MAIN_DISP" = "$SEC_DISP" ] && { echo "[dual-kiosk] 错误：主副屏不能是同一块显示器" >&2; exit 1; }
+if [ "$SEC_DISP" = "$MAIN_DISP" ] && [ "$SEC_SAME" = "0" ]; then
+  echo "[dual-kiosk] 错误：主副屏不能是同一块显示器（单屏环境请 --sec=none 或省略让脚本自动降级）" >&2
+  exit 1
+fi
 
 # ---------- 清理并启动 ----------
 pkill -f "chromium[-]browser" 2>/dev/null || true
@@ -130,12 +181,16 @@ nohup "$BIN" $FLAGS --user-data-dir="$HOME/.config/chromium-play" \
   "http://127.0.0.1:${PORT}/play" >/tmp/chromium-play.log 2>&1 &
 sleep 8
 
-echo "[dual-kiosk] 副屏 /secondary → $SEC_DISP"
-xdotool mousemove $((SX + SW / 4)) $((SH / 2))
-nohup "$BIN" $FLAGS --user-data-dir="$HOME/.config/chromium-secondary" \
-  --window-position=${SX},0 --window-size=${SW},${SH} \
-  "http://127.0.0.1:${PORT}/secondary" >/tmp/chromium-secondary.log 2>&1 &
-sleep 6
+if [ -n "$SEC_DISP" ]; then
+  echo "[dual-kiosk] 副屏 /secondary → $SEC_DISP"
+  xdotool mousemove $((SX + SW / 4)) $((SH / 2))
+  nohup "$BIN" $FLAGS --user-data-dir="$HOME/.config/chromium-secondary" \
+    --window-position=${SX},0 --window-size=${SW},${SH} \
+    "http://127.0.0.1:${PORT}/secondary" >/tmp/chromium-secondary.log 2>&1 &
+  sleep 6
+else
+  echo "[dual-kiosk] --sec=none：跳过副屏，仅启动主屏"
+fi
 
 echo "[dual-kiosk] 窗口布局："
 for w in $(xdotool search --class "chromium-browser" 2>/dev/null); do
