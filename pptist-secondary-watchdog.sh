@@ -145,4 +145,46 @@ if [ "$H" = "0430" ] && [ $((NOW - MAIN_LAST_ACT)) -gt 21600 ] && [ $((NOW - SEC
   MAIN_LAST_ACT=$NOW; SEC_LAST_ACT=$NOW
 fi
 
+# ---------- 窗口落位巡检：主/副屏装反（GNOME 竞态）时自动纠正 ----------
+# 依赖 start-dual-kiosk.sh 的双实例布局；单屏降级(--sec=none)时自动跳过
+placement_check() {
+  command -v xdotool >/dev/null 2>&1 && command -v wmctrl >/dev/null 2>&1 || return 0
+  export DISPLAY="${DISPLAY:-:0}"
+  local xa
+  xa=$(ps -eo args | grep -o "\-auth [^ ]*" | grep mutter-Xwayland | head -1 | cut -d" " -f2)
+  [ -n "$xa" ] && export XAUTHORITY="$xa"
+  local m1x="" m2x=""
+  while read -r line; do
+    local name
+    name=$(echo "$line" | awk '{print $2}' | sed 's/^[+*!~-]*//')
+    [[ "$line" =~ ([0-9]+)/[0-9]+x([0-9]+)/[0-9]+\+([0-9]+)\+([0-9]+) ]] || continue
+    if [ -z "$m1x" ]; then m1x="${BASH_REMATCH[3]}"; else m2x="${BASH_REMATCH[3]}"; break; fi
+  done < <(xrandr --listmonitors 2>/dev/null | grep -E "^[[:space:]]*[0-9]+:")
+  if [ -z "$m1x" ] || [ -z "$m2x" ] || [ "$m1x" = "$m2x" ]; then return 0; fi
+  for w in $(xdotool search --class "chromium-browser" 2>/dev/null); do
+    local wd pid cmd want cur
+    wd=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | sed -n 's/^WIDTH=//p')
+    case "$wd" in 1920|2560|3840) ;; *) continue ;; esac
+    pid=$(xdotool getwindowpid "$w" 2>/dev/null)
+    [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || continue
+    cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+    case "$cmd" in
+      *user-data-dir=*chromium-play*)      want="$m1x" ;;
+      *user-data-dir=*chromium-secondary*) want="$m2x" ;;
+      *) continue ;;
+    esac
+    cur=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | sed -n 's/^X=//p')
+    if [ -n "$cur" ] && [ "$cur" != "$want" ]; then
+      wmctrl -i -r "$w" -b remove,fullscreen 2>/dev/null
+      sleep 0.3
+      xdotool windowmove "$w" "$want" 0 2>/dev/null
+      sleep 0.3
+      wmctrl -i -r "$w" -b add,fullscreen 2>/dev/null
+      log "落位纠正：$([ "$want" = "$m1x" ] && echo 主屏 || echo 副屏) 窗口 X=$cur → X=$want"
+    fi
+  done
+  return 0
+}
+placement_check
+
 write_state
