@@ -1,0 +1,11 @@
+[Unit]
+Description=PPTist secondary screen freeze watchdog
+After=network-online.target pptist.service
+Wants=pptist.service
+
+[Service]
+Type=oneshot
+User=ztl
+ExecStart=/usr/local/bin/pptist-secondary-watchdog.sh
+Environment=DISPLAY=:0
+KillMode=process

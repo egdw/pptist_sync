@@ -1,0 +1,10 @@
+[Unit]
+Description=Run PPTist secondary watchdog every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+Unit=pptist-watchdog.service
+
+[Install]
+WantedBy=timers.target
