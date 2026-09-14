@@ -65,6 +65,7 @@ const LED_CACHE_DIR = path.resolve(process.env.PPTIST_LED_CACHE_DIR || path.join
 const LED_PORTRAIT_DIR = path.resolve(process.env.PPTIST_LED_PORTRAIT_DIR || path.join(ROOT, 'data/led-assets/portraits'))
 const SHOWFLOW_STATE_FILE = path.resolve(process.env.PPTIST_SHOWFLOW_STATE_FILE || path.join(ROOT, 'data/showflow/state.json'))
 const SHOWFLOW_LAST_NONEMPTY_FILE = path.join(path.dirname(SHOWFLOW_STATE_FILE), 'state.last-nonempty.json')
+const SHOWFLOW_RUNTIME_FILE = path.join(path.dirname(SHOWFLOW_STATE_FILE), 'runtime.json')
 const PRESENTATION_LINK_CONFIG_FILE = path.resolve(process.env.PPTIST_PRESENTATION_LINK_CONFIG_FILE || path.join(ROOT, 'data/config/presentation-link.json'))
 const STUDIO_DATA_DIR = path.resolve(process.env.PPTIST_STUDIO_DATA_DIR || path.join(ROOT, 'data/studio'))
 const ledRenderService = createLedRenderService({ cacheDir: LED_CACHE_DIR, portraitDir: LED_PORTRAIT_DIR, publicUrl: PUBLIC_URL })
@@ -775,6 +776,20 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 405, { error: 'Method Not Allowed' }); return
     }
 
+    if (pathname === '/showflow-api/runtime') {
+      // 联动运行时（当前虚拟步骤）：供播放页启动后恢复到重启前的画面
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      try {
+        const runtime = JSON.parse(await fsp.readFile(SHOWFLOW_RUNTIME_FILE, 'utf8'))
+        sendJson(res, 200, { exists: true, runtime })
+      }
+      catch (error) {
+        if (error.code === 'ENOENT') sendJson(res, 200, { exists: false, runtime: null })
+        else throw error
+      }
+      return
+    }
+
     if (pathname === '/showflow-api/state') {
       res.setHeader('Access-Control-Allow-Origin', '*')
       // 读写时补齐缺失的角色源：旧版客户端会把缺 secondary 的结构写回来，
@@ -1200,7 +1215,7 @@ try {
   monitorPublisher.applyConfig(linkConfig)
   for (const p of Object.values(ledPublishers)) p.applyConfig(linkConfig)
 } catch { /* 尚未配置 MQTT */ }
-const showFlowWs = attachShowFlowWs(server, log)
+const showFlowWs = attachShowFlowWs(server, log, { runtimeFile: SHOWFLOW_RUNTIME_FILE })
 getShowFlowWsStatus = showFlowWs.getStatus
 server.listen(PORT, '0.0.0.0', () => {
   log(`服务已启动：http://0.0.0.0:${PORT}（播放页 /play，上传页 /upload，编辑器 /editor，联动编排 /showflow，副屏 Reveal /reveal，副屏 PPTist /secondary）`)

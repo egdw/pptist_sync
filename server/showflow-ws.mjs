@@ -9,17 +9,48 @@
  * 所有业务语义（NAVIGATE/ACK/SYNC_STATE/幂等/重试）都在 Controller 与播放端实现，
  * 服务器不解析业务字段。
  */
+import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import { WebSocketServer } from 'ws'
 
 const ALLOWED_ROLES = new Set(['controller', 'main', 'secondary', 'tablet', 'console'])
 const SINGLE_INSTANCE_ROLES = new Set(['controller', 'main'])
 
-export function attachShowFlowWs(server, log = () => {}) {
+export function attachShowFlowWs(server, log = () => {}, opts = {}) {
   // 单条消息上限：协议消息均为小 JSON；无上限时恶意/异常客户端可用巨消息撑爆内存
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 })
   /** ws -> { role } */
   const clients = new Map()
   const runtime = { stepId: null, mainPageId: null, secondaryPageId: null, seq: null, updatedAt: null }
+  const runtimeFile = opts.runtimeFile || null
+  let runtimePersistTimer = null
+
+  /** 运行时持久化（重启后恢复到当前虚拟步骤）：SYNC_STATE 防抖 1s 原子写盘 */
+  function scheduleRuntimePersist() {
+    if (!runtimeFile) return
+    if (runtimePersistTimer) clearTimeout(runtimePersistTimer)
+    runtimePersistTimer = setTimeout(async () => {
+      runtimePersistTimer = null
+      try {
+        const dir = runtimeFile.slice(0, runtimeFile.lastIndexOf('/'))
+        await fsp.mkdir(dir, { recursive: true })
+        const tmp = `${runtimeFile}.${Date.now()}.tmp`
+        await fsp.writeFile(tmp, JSON.stringify(runtime))
+        await fsp.rename(tmp, runtimeFile)
+      }
+      catch (error) {
+        log(`[showflow-ws] 运行时持久化失败：${error.message}`)
+      }
+    }, 1000)
+    if (runtimePersistTimer.unref) runtimePersistTimer.unref()
+  }
+  // 启动时载入上次运行时（服务重启后 resync 基线仍是最新步骤）
+  if (runtimeFile) {
+    try {
+      Object.assign(runtime, JSON.parse(fs.readFileSync(runtimeFile, 'utf8')))
+    }
+    catch { /* 无历史运行时 */ }
+  }
 
   const byRole = role => {
     const found = []
@@ -126,6 +157,7 @@ export function attachShowFlowWs(server, log = () => {}) {
       // 只镜像 Controller 已经决定的快照，供 Studio 状态页只读展示；不参与路由和业务决策。
       if (info.role === 'controller' && msg.type === 'SYNC_STATE' && msg.state) {
         Object.assign(runtime, { stepId: msg.state.stepId || null, mainPageId: msg.state.mainPageId || null, secondaryPageId: msg.state.secondaryPageId || null, seq: msg.state.seq ?? null, updatedAt: Date.now() })
+        scheduleRuntimePersist()
       }
 
       // —— 心跳 ——

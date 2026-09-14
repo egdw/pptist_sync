@@ -174,6 +174,8 @@ export const useShowFlowStore = defineStore('showFlow', () => {
         onStepChange: snap => {
           snapshot.value = snap
           currentStepIndex.value = controller?.currentStepIndex ?? -1
+          // 镜像当前步骤到服务端（运行时持久化）：完全重启后播放页据此恢复到重启前画面
+          if (snap) wsClient?.send({ type: 'SYNC_STATE', state: { ...snap } })
           // 当前步骤只属于本窗口的放映运行态。不要写回 flow，也不要保存共享方案：
           // 空格翻页不应递增 serverRevision，更不应让其他窗口产生版本冲突。
         },
@@ -473,7 +475,19 @@ export const useShowFlowStore = defineStore('showFlow', () => {
       return
     }
     if (!controller) controller = createController()
-    if (flow.value.steps.length) await controller.start(0)
+    if (flow.value.steps.length) {
+      // 完全重启/刷新后恢复到重启前的画面：服务端持久化了上次联动运行时
+      // （当前虚拟步骤 stepId），按它恢复；无记录（首次放映）则从第一步开始
+      let resumeIndex = -1
+      try {
+        const rt = await (await fetch('/showflow-api/runtime', { cache: 'no-store' })).json()
+        const stepId: string | null = rt?.runtime?.stepId || null
+        if (stepId) resumeIndex = flow.value.steps.findIndex(s => s.id === stepId)
+      }
+      catch { /* 服务端无运行时记录：从第一步开始 */ }
+      if (resumeIndex >= 0) await controller.gotoStep(resumeIndex)
+      else await controller.start(0)
+    }
   }
 
   const stopShow = () => { showRequest++; linkedScreening.value = false; controller?.stop() }
