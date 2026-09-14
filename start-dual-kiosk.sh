@@ -105,9 +105,9 @@ if [ "$ACTION" = "restart" ]; then
 fi
 
 # ---------- 显示器探测与分配 ----------
+# SSH 终端里没有 DISPLAY：板子桌面会话固定为 :0，自动补默认值
 if [ -z "${DISPLAY:-}" ]; then
-  echo "[dual-kiosk] 需要 DISPLAY（Xwayland/X11 会话内运行）" >&2
-  exit 1
+  export DISPLAY=:0
 fi
 XAUTH=$(ps -eo args | grep -o "\-auth [^ ]*" | grep mutter-Xwayland | head -1 | cut -d" " -f2)
 [ -n "$XAUTH" ] && export XAUTHORITY="$XAUTH"
@@ -192,8 +192,43 @@ else
   echo "[dual-kiosk] --sec=none：跳过副屏，仅启动主屏"
 fi
 
-echo "[dual-kiosk] 窗口布局："
+echo "[dual-kiosk] 窗口落位校正（按实例 PID 识别，防 GNOME 竞态放错屏）"
+sleep 3
+for round in 1 2; do
+  for w in $(xdotool search --class "chromium-browser" 2>/dev/null); do
+    WD=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | sed -n 's/^WIDTH=//p')
+    [ "$WD" = "$MW" ] || [ "$WD" = "$SW" ] || continue
+    PID=$(xdotool getwindowpid "$w" 2>/dev/null)
+    CMD=$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null || true)
+    case "$CMD" in
+      *chromium-play*)      WANT="$MX"; WANTW="$MW" ;;
+      *chromium-secondary*) WANT="$SX"; WANTW="$SW" ;;
+      *) continue ;;
+    esac
+    CUR=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | sed -n 's/^X=//p')
+    if [ "$CUR" != "$WANT" ]; then
+      echo "  校正: $([ "$WANTW" = "$MW" ] && echo 主屏 || echo 副屏) 窗口 $w 从 X=$CUR → X=$WANT"
+      wmctrl -i -r "$w" -b remove,fullscreen 2>/dev/null
+      sleep 0.3
+      xdotool windowmove "$w" "$WANT" 0 2>/dev/null
+      sleep 0.3
+      wmctrl -i -r "$w" -b add,fullscreen 2>/dev/null
+      sleep 1
+    fi
+  done
+done
+echo "[dual-kiosk] 最终布局："
 for w in $(xdotool search --class "chromium-browser" 2>/dev/null); do
-  xdotool getwindowgeometry --shell "$w" 2>/dev/null | awk '/^(X|WIDTH)/{printf "%s=%s ",$1,$2}END{print ""}'
-done | grep "WIDTH=${MW}" | sed 's/^/  /'
+  WD=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | sed -n 's/^WIDTH=//p')
+  [ "$WD" != "$MW" ] && [ "$WD" != "$SW" ] && continue
+  PID=$(xdotool getwindowpid "$w" 2>/dev/null)
+  CMD=$(tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null || true)
+  case "$CMD" in
+    *chromium-play*)      TAG="主屏/play" ;;
+    *chromium-secondary*) TAG="副屏/secondary" ;;
+    *) continue ;;
+  esac
+  CUR=$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | sed -n 's/^X=//p')
+  echo "  $TAG → X=$CUR"
+done
 echo "[dual-kiosk] 完成。页面将自动恢复到上次的联动画面。服务地址: http://$(hostname -I | awk '{print $1}'):${PORT}"
