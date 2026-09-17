@@ -1,0 +1,13 @@
+[Unit]
+Description=PPTist primary IP conflict guard (yield .13 to backup if taken)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/pptist-ip-bootguard.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
