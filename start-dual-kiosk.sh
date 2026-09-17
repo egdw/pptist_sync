@@ -184,7 +184,13 @@ sleep 8
 if [ -n "$SEC_DISP" ]; then
   echo "[dual-kiosk] 副屏 /secondary → $SEC_DISP"
   xdotool mousemove $((SX + SW / 4)) $((SH / 2))
-  nohup "$BIN" $FLAGS --user-data-dir="$HOME/.config/chromium-secondary" \
+  # 单屏降级时副屏不能用 --kiosk（kiosk 强制全屏会盖住主屏），用普通窗口
+  if [ "$SEC_SAME" = "1" ]; then
+    SEC_FLAGS="--noerrdialogs --disable-session-crashed-bubble --check-for-update-interval=31536000 --use-gl=egl"
+  else
+    SEC_FLAGS="$FLAGS"
+  fi
+  nohup "$BIN" $SEC_FLAGS --user-data-dir="$HOME/.config/chromium-secondary" \
     --window-position=${SX},0 --window-size=${SW},${SH} \
     "http://127.0.0.1:${PORT}/secondary" >/tmp/chromium-secondary.log 2>&1 &
   sleep 6
