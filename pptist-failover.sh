@@ -20,6 +20,7 @@ STATE=/var/tmp/pptist-failover.state
 APPLY=/tmp/pptist-failover-apply.sh
 RESULT=/tmp/pptist-failover.result
 LOGTAG=pptist-failover
+SUDO_PASS="123456"   # 本机/远端 sudo 密码（板内封闭环境，与 一键更新-服务器.sh 同约定）
 log() { logger -t "$LOGTAG" "$*"; echo "[$(date '+%F %T')] $*"; }
 find_con() { nmcli -t -f NAME,DEVICE con show --active 2>/dev/null | awk -F: '$2=="eth1"{print $1; exit}'; }
 # 存活探测用 TCP 服务端口(板子忽略 ICMP ping, ping 会误判)
@@ -49,10 +50,20 @@ status)
 
 sync-data)
   if primary_alive; then
-    log "从主力机同步最新数据 ..."
+    log "同步 pptist data ..."
     rsync -a --delete ztl@$VIP:/home/ztl/ppt/pptist-rk3588-lcd-deploy/data/ /home/ztl/ppt/pptist-rk3588-lcd-deploy/data/ \
-      && log "数据同步完成" || log "数据同步失败"
+      && log "pptist 数据同步完成" || log "pptist 数据同步失败"
     systemctl try-restart pptist 2>/dev/null || true
+    log "同步禅道（两台禅道将各暂停约 1 分钟）..."
+    systemctl stop zbox 2>/dev/null || true
+    ssh ztl@$VIP "echo $SUDO_PASS | sudo -S -p '' systemctl stop zbox" >/dev/null 2>&1
+    ssh ztl@$VIP "echo $SUDO_PASS | sudo -S -p '' tar czf - -C / --exclude=opt/zbox/logs --exclude=opt/zbox/tmp opt/zbox" \
+      | sudo tar xzf - -C /
+    log "禅道数据已同步"
+    ssh ztl@$VIP "echo $SUDO_PASS | sudo -S -p '' systemctl start zbox" >/dev/null 2>&1
+    systemctl start zbox
+    sleep 3
+    systemctl is-active zbox >/dev/null && log "禅道已恢复（本机 + 主力机）" || log "警告：本机禅道未恢复，手动执行 sudo systemctl start zbox"
   else
     log "主力机失联，无法同步（使用本机最近一次同步的数据）"
   fi
